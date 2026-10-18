@@ -124,8 +124,17 @@ def test_do_get_attachment_saves_file(monkeypatch, tmp_path):
     payload = {"base64": base64.b64encode(b"%PDF-dados").decode(), "filename": "a.pdf"}
     portal = FakePortal(attachment=payload)
     meta = mcp.do_get_attachment("123", "456", portal=portal, directory=tmp_path)
-    assert meta["filename"] == "a.pdf" and meta["bytes"] == 10 and meta["markdown"] == ""
-    assert (tmp_path / "a.pdf").exists()
+    assert meta["filename"] == "123-456-a.pdf" and meta["bytes"] == 10 and meta["markdown"] == ""
+    again = mcp.do_get_attachment("123", "456", portal=portal, directory=tmp_path)
+    assert again["filename"] == "123-456-a.pdf"  # mesmo anexo: substitui, sem cópia -1
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.endswith(".text.json")) == ["123-456-a.pdf"]
+
+
+def test_attachment_with_explicit_filename_keeps_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp, "do_ensure", lambda *a, **k: {"ok": True})
+    payload = {"base64": base64.b64encode(b"%PDF-dados").decode(), "filename": "a.pdf"}
+    meta = mcp.do_get_attachment("123", "456", "meu.pdf", portal=FakePortal(attachment=payload), directory=tmp_path)
+    assert meta["filename"] == "meu.pdf"
 
 
 def test_do_get_process_without_report_is_a_clear_error(monkeypatch):
@@ -386,3 +395,26 @@ def test_stdio_prints_never_reach_the_protocol_pipe(tmp_path):
     lines += rest.splitlines()
     assert all(json.loads(line)["jsonrpc"] == "2.0" for line in lines if line.strip())
     assert "VAZOU" in stderr
+
+
+def test_html_to_text_indents_nested_lists():
+    source = ("<p>Liberada:</p><ul><li>Maior de 80 anos</li><li>Migrantes com:<ul><li>Registro;</li>"
+              "<li>Protocolo</li></ul></li><li>Outros</li></ul><p><strong>Atenção!</strong>&nbsp;Fim</p>")
+    assert mcp.html_to_text(source) == (
+        "Liberada:\n- Maior de 80 anos\n- Migrantes com:\n  - Registro;\n  - Protocolo\n- Outros\nAtenção! Fim"
+    )
+
+
+def test_compact_task_summarizes_open_requirement():
+    task = {**TASK, "tipoExigencia": "FALTA_BIOMETRIA", "definicoesAnexoExigencia": [
+        {"nome": "Comprovante do cadastro biométrico do titular", "obrigatorio": False, "ativo": True,
+         "extensoes": ["pdf", "jpg"]},
+        {"nome": "Inativo", "ativo": False},
+    ]}
+    assert mcp.compact_task(task)["exigencia"] == {
+        "tipo": "FALTA_BIOMETRIA",
+        "documentosExigidos": [{"nome": "Comprovante do cadastro biométrico do titular", "obrigatorio": False,
+                                "extensoes": ["pdf", "jpg"]}],
+        "camposExigidos": [],
+    }
+    assert mcp.compact_task(TASK)["exigencia"] is None

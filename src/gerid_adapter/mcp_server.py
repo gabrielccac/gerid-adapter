@@ -175,13 +175,28 @@ def do_get_task(protocolo, portal=None, full=False):
     return task if full else compact_task(task)
 
 
+_TAG = re.compile(r"<(/?)([a-zA-Z0-9]+)[^>]*>")
+
+
 def html_to_text(value):
-    """Comentários do portal vêm em HTML: texto corrido com quebras de linha."""
-    text = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</div>", "\n", str(value or ""))
-    text = re.sub(r"(?i)<li[^>]*>", "- ", text)
-    text = html.unescape(re.sub(r"<[^>]+>", "", text)).replace("\xa0", " ")
-    lines = (re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())
-    return "\n".join(line for line in lines if line)
+    """Comentários do portal vêm em HTML: texto com quebras e listas indentadas."""
+    parts, depth, last = [], 0, 0
+    source = str(value or "")
+    for tag in _TAG.finditer(source):
+        parts.append(source[last:tag.start()])
+        last = tag.end()
+        closing, name = tag[1] == "/", tag[2].lower()
+        if name in ("ul", "ol"):
+            depth = max(0, depth + (-1 if closing else 1))
+            parts.append("\n")
+        elif name == "li" and not closing:
+            parts.append("\n" + "  " * max(0, depth - 1) + "- ")
+        elif name in ("br", "p", "div", "li"):
+            parts.append("\n")
+    parts.append(source[last:])
+    text = html.unescape("".join(parts)).replace("\xa0", " ")
+    lines = (re.sub(r"(?<=\S)[ \t]+", " ", line).rstrip() for line in text.splitlines())
+    return "\n".join(line for line in lines if line.strip())
 
 
 _DECISION = re.compile(r"(não )?foi reconhecido o direito", re.I)
@@ -218,6 +233,20 @@ def _unique(items, key):
             seen.add(item.get(key))
             out.append(item)
     return out
+
+
+def _requirement(task):
+    """O que o INSS está pedindo numa exigência aberta (None quando não há)."""
+    kind = task.get("tipoExigencia")
+    docs_required = [
+        {"nome": item.get("nome"), "obrigatorio": bool(item.get("obrigatorio")),
+         "extensoes": item.get("extensoes") or []}
+        for item in task.get("definicoesAnexoExigencia") or [] if item.get("ativo", True)
+    ]
+    fields = [item.get("nome") for item in task.get("camposAdicionaisExigencia") or [] if item.get("nome")]
+    if not (kind or docs_required or fields):
+        return None
+    return {"tipo": kind, "documentosExigidos": docs_required, "camposExigidos": fields}
 
 
 def compact_task(task):
@@ -259,6 +288,7 @@ def compact_task(task):
         "etapas": {"avaliacaoSocial": task.get("descricaoEtapaAvaliacao"), "pericia": task.get("descricaoEtapaPericia")},
         "agendamentos": schedules,
         "podeCumprirExigencia": task.get("podeCumprirExigencia"),
+        "exigencia": _requirement(task),
         "comentarios": comments,
         "anexos": [
             {"id": item.get("id"), "nome": item.get("nomeArquivo"), "descricao": item.get("descricaoArquivo"),
@@ -296,8 +326,13 @@ def do_get_attachment(protocolo, anexo_id, filename=None, portal=None, directory
     if payload is None:
         raise LookupError(f"anexo {anexo_id} não encontrado no protocolo {protocolo}")
     content = docs.decode_download(payload["base64"])
-    name = filename or attachment_filename(payload["filename"], f"{protocolo}-{anexo_id}.bin")
-    meta = docs.save_bytes(content, name, f"{protocolo}-{anexo_id}.bin", directory or DOWNLOAD_DIR)
+    fallback = f"{protocolo}-{anexo_id}.bin"
+    # Nomes do portal se repetem entre processos ("Despacho de Análise.pdf"):
+    # prefixar com protocolo e id identifica o anexo, e como o conteúdo de um id
+    # não muda, baixar de novo substitui em vez de criar cópias -1, -2...
+    original = attachment_filename(payload["filename"], "anexo.bin")
+    name = filename or f"{protocolo}-{anexo_id}-{original}"
+    meta = docs.save_bytes(content, name, fallback, directory or DOWNLOAD_DIR, overwrite=not filename)
     return {"protocolo": protocolo, "anexoId": anexo_id, **meta,
             **docs.slice_text(docs.cached_analysis(meta["path"], content), 0, max_chars)}
 
