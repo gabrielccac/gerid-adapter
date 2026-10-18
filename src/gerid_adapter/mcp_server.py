@@ -76,16 +76,23 @@ def _session_state(state_dir):
     return json.loads((state_dir / "portal-session.json").read_text())
 
 
-def _mint(state_dir):
-    # MCP usa o perfil nativo (cdp) headless: já aquecido e validado; cloak fica
-    # disponível via INSS_BROWSER=cloak. Nunca abrir janela no servidor.
+def _backends():
+    """Ordem dos navegadores do mint: o preferido (INSS_BROWSER, padrão cloak) e depois o outro.
+
+    A nota do reCAPTCHA de cada navegador varia com o tempo (o perfil cdp "esfria" e passa a
+    ser recusado com 400); com os dois na fila, o MCP segue funcionando sem intervenção.
+    """
+    preferred = os.environ.get("INSS_BROWSER", "cloak")
+    return [preferred] + [name for name in ("cloak", "cdp") if name != preferred]
+
+
+def _mint(state_dir, backend=None):
+    # Sempre headless: nunca abrir janela no servidor.
     # A SPA confere ifs_ts + ifs_ei (access_token de 10 min) e manda para o login
     # do CAS se venceu; quem vale para a API é o ifs_auth, então carimbamos agora.
     state = _session_state(state_dir)
     state["ifs_ts"] = state["ifs_iat"] = js_now()
-    return recaptcha_mod.mint(state,
-                              backend_name=os.environ.get("INSS_BROWSER", "cdp"),
-                              headless=True)
+    return recaptcha_mod.mint(state, backend_name=backend or _backends()[0], headless=True)
 
 
 def do_ensure(state_dir=None):
@@ -128,11 +135,16 @@ def do_diagnose():
 
 
 def _with_fresh_captcha(factory, state_dir):
-    """Minta e chama; diante de 400 (perfil esfriando), tenta 1x com token novo."""
+    """Minta e chama; se o captcha for recusado (400) ou o mint falhar, tenta o outro navegador."""
     last = None
-    for _ in range(2):
+    for backend in _backends():
         try:
-            return factory(_mint(state_dir))
+            token = _mint(state_dir, backend=backend)
+        except RuntimeError as error:  # mint falhou neste navegador: tenta o próximo
+            last = error
+            continue
+        try:
+            return factory(token)
         except ApiError as error:
             last = error
             if getattr(error, "status", None) != 400:

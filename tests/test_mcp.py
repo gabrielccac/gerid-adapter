@@ -66,7 +66,7 @@ class FakePortal:
 def test_do_notifications_uses_fresh_captcha(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp, "do_ensure", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(mcp, "_state_dir", lambda: tmp_path)
-    monkeypatch.setattr(mcp, "_mint", lambda state_dir: "RC-1")
+    monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: "RC-1")
     portal = FakePortal(notifications={"notificacoes": [{"id": 1}]})
     assert mcp.do_notifications(5, calls=(portal, None))["notificacoes"] == [{"id": 1}]
     assert portal.seen == [("notifications", "RC-1", 5)]
@@ -75,7 +75,7 @@ def test_do_notifications_uses_fresh_captcha(monkeypatch, tmp_path):
 def test_do_search_tasks_passes_filters(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp, "do_ensure", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(mcp, "_state_dir", lambda: tmp_path)
-    monkeypatch.setattr(mcp, "_mint", lambda state_dir: "RC-2")
+    monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: "RC-2")
     portal = FakePortal(search={"tarefas": []})
     assert mcp.do_search_tasks(calls=(portal, None), page=2, page_size=10, status="X") == {"tarefas": []}
     assert portal.seen[0][0] == "search" and portal.seen[0][1] == "RC-2"
@@ -100,7 +100,7 @@ def test_fresh_captcha_retries_once_on_400(monkeypatch, tmp_path):
             return {"notificacoes": [captcha]}
 
     mints = []
-    monkeypatch.setattr(mcp, "_mint", lambda state_dir: mints.append(1) or f"RC-{len(mints)}")
+    monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: mints.append(backend) or f"RC-{len(mints)}")
     portal = Portal()
     assert mcp._with_fresh_captcha(lambda c: portal.notifications(c), tmp_path) == {"notificacoes": ["RC-2"]}
     assert len(mints) == 2
@@ -114,7 +114,7 @@ def test_fresh_captcha_does_not_retry_other_errors(monkeypatch, tmp_path):
         error.status = 500
         raise error
 
-    monkeypatch.setattr(mcp, "_mint", lambda state_dir: "RC-1")
+    monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: "RC-1")
     with pytest.raises(ApiError):
         mcp._with_fresh_captcha(fail, tmp_path)
 
@@ -418,3 +418,34 @@ def test_compact_task_summarizes_open_requirement():
         "camposExigidos": [],
     }
     assert mcp.compact_task(TASK)["exigencia"] is None
+
+
+def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, tmp_path):
+    """Perfil cdp com nota baixa (400 "Erro de validação do reCAPTCHA"): o mesmo pedido passa com o outro navegador."""
+    from gerid_adapter.api import ApiError
+
+    monkeypatch.setenv("INSS_BROWSER", "cdp")
+    used = []
+    monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: used.append(backend) or f"RC-{backend}")
+
+    def call(token):
+        if token == "RC-cdp":
+            error = ApiError("POST x falhou (400): Erro de validação do reCAPTCHA.")
+            error.status = 400
+            raise error
+        return {"ok": token}
+
+    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-cloak"}
+    assert used == ["cdp", "cloak"]
+
+
+def test_fresh_captcha_switches_browser_when_mint_fails(monkeypatch, tmp_path):
+    monkeypatch.delenv("INSS_BROWSER", raising=False)
+
+    def mint(state_dir, backend=None):
+        if backend == "cloak":
+            raise RuntimeError("Mint do captcha falhou")
+        return "RC-cdp"
+
+    monkeypatch.setattr(mcp, "_mint", mint)
+    assert mcp._with_fresh_captcha(lambda token: {"ok": token}, tmp_path) == {"ok": "RC-cdp"}
