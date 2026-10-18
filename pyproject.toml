@@ -5,7 +5,11 @@ description = "Login no GERID/INSS com certificado A3 via PKCS#11"
 requires-python = ">=3.12"
 dependencies = [
     "certifi>=2026.7.22",
+    "cloakbrowser>=0.6.3",
     "cryptography>=50.0.2",
+    "curl-cffi>=0.14",
+    "mcp>=2.3",
+    "pypdf>=3",
     "keyring>=25.7.0",
     "pykcs11>=1.5.20",
     "tlslite-ng>=0.8.2",
@@ -13,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 gerid-poc = "gerid_adapter.poc:main"
+gerid-mcp = "gerid_adapter.mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]

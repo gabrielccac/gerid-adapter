@@ -12,8 +12,18 @@ def account(serial):
     return f"pin:{serial}"
 
 
+def _read(service, account_name):
+    try:
+        return keyring.get_password(service, account_name)
+    except Exception as error:
+        raise LookupError(
+            f"Cofre do sistema inacessível ({type(error).__name__}): {error}. "
+            "No macOS, autorize o acesso ao Chaveiro; no Linux, confira o Secret Service."
+        ) from None
+
+
 def get_pin(serial):
-    pin = keyring.get_password(SERVICE, account(serial))
+    pin = _read(SERVICE, account(serial))
     if not pin:
         raise LookupError(
             f"PIN do token {serial} não está no cofre. Grave com: uv run gerid-poc pin-set"
@@ -40,7 +50,7 @@ TOTP_ACCOUNT = "totp:gerid"
 
 
 def get_totp_secret():
-    secret = keyring.get_password(SERVICE, TOTP_ACCOUNT)
+    secret = _read(SERVICE, TOTP_ACCOUNT)
     if not secret:
         raise LookupError("Segredo TOTP do GERID não está no cofre. Grave com: uv run gerid-poc totp-set")
     return secret
