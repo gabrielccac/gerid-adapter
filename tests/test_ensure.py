@@ -10,7 +10,7 @@ from gerid_adapter import poc
 
 def jwt(exp_offset):
     exp = int(time.time()) + exp_offset
-    seg = lambda o: base64.urlsafe_b64encode(json.dumps(o).encode()).decode().rstrip("=")  # noqa: E731
+    seg = lambda o: base64.urlsafe_b64encode(json.dumps(o).encode()).decode().rstrip("=")
     return f"{seg({'alg': 'none'})}.{seg({'exp': exp})}."
 
 
@@ -205,7 +205,7 @@ class FakeHardware:
         pass
 
 
-def fake_hardware(monkeypatch, token=None, pin="1234", totp="SECRET"):
+def fake_hardware(monkeypatch, token=None, pin: str | Exception = "1234", totp: str | Exception = "SECRET"):
     import gerid_adapter.pin as pin_store
     import gerid_adapter.token as token_mod
 
@@ -328,6 +328,7 @@ def test_session_lock_serializes_across_processes(tmp_path):
         "    print('in', flush=True); time.sleep(0.6)\n"
     )
     proc = subprocess.Popen([sys.executable, "-c", child, str(tmp_path)], stdout=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
     assert proc.stdout.readline().strip() == "in"
     start = time.monotonic()
     with poc.session_lock(tmp_path):
