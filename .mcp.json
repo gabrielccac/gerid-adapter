@@ -2,7 +2,7 @@
   "mcpServers": {
     "gerid": {
       "command": "uv",
-      "args": ["run", "--directory", "/Users/jeanferreira/code/gerid-adapter", "gerid-mcp"]
+      "args": ["run", "--directory", "${CLAUDE_PROJECT_DIR:-.}", "gerid-mcp"]
     }
   }
 }

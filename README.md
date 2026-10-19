@@ -31,9 +31,9 @@ consulte o INSS e a OAB sobre canais oficiais para entidades conveniadas.
 | `tools/inventario_token.py` | Inventário do token, só leitura e sem login |
 | `src/gerid_adapter/token.py` | Acesso PKCS#11: certificados, um único `C_Login`, assinatura. Para se o contador de PIN indicar tentativa errada |
 | `src/gerid_adapter/tlskey.py` | Chave RSA do tlslite-ng com a assinatura delegada ao token |
-| `src/gerid_adapter/pin.py` | Segredos no cofre do sistema (`keyring`), nunca em arquivo |
+| `src/gerid_adapter/pin.py` | Lê `GERID_PIN` e `GERID_TOTP_SECRET` do `.env` (fora do git) |
 | `src/gerid_adapter/totp.py` | TOTP (RFC 6238) |
-| `src/gerid_adapter/poc.py` | CLI `gerid-poc` (`check`, `pin-set`, `login`, `totp-set`, `authorize`, `session`, `ensure`, `diagnose`, `watch`, `api`) |
+| `src/gerid_adapter/poc.py` | CLI `gerid-poc` (`check`, `login`, `totp-import`, `totp-check`, `authorize`, `session`, `ensure`, `diagnose`, `watch`, `api`) |
 | `src/gerid_adapter/session.py` | Troca do `access_token` + papel e o estado do `localStorage` p/ transferir a sessão ao browser, tudo sem PIN |
 | `src/gerid_adapter/recaptcha.py` | Oráculo de `tokenReCAPTCHA` (cloak headless ou seu Chrome via CDP com perfil persistente); um token por chamada |
 
@@ -44,7 +44,7 @@ aquece o perfil; com ele aquecido, `--browser cdp --headless` passa sem janela.
 ## Persistência da sessão
 
 `gerid-poc ensure` garante sessão válida e só refaz o que expirou, sem digitar
-nada (PIN e TOTP saem do cofre; o token A3 precisa estar plugado):
+nada (PIN e TOTP saem do `.env`; o token A3 precisa estar plugado):
 
 1. `ifs_auth` válido (> 2 min) **e vivo no servidor** (prova de vida; o `exp`
    local pode mentir — sessão derrubada no servidor renova mesmo no prazo) → reusar;
@@ -76,7 +76,7 @@ browser headless.
 - Protocolo/anexo inexistente vira erro claro ("protocolo X não encontrado").
 
 Pré-verificação (`gerid-poc diagnose` ou `gerid_diagnose`): A3 plugado? PIN e
-TOTP no cofre? O `ensure` consulta isso antes de tentar login e aborta com o
+TOTP no `.env`? O `ensure` consulta isso antes de tentar login e aborta com o
 motivo (sem gastar tentativa de PIN); toda falha vira mensagem acionável em
 vez de traceback, e nenhum segredo chega ao agente.
 
@@ -101,7 +101,7 @@ GERID_TUNNEL=127.0.0.1:8444 GERID_TUNNEL_443=127.0.0.1:8445 uv run gerid-poc log
 O usuário SSH do salto precisa de `PermitOpen` para os dois destinos (só
 encaminhamento, sem shell). Sem isso, o CAS rejeita o TGC mintado por outro IP.
 
-O arquivo `.mcp.json` na raiz já deixa o servidor pronto para o Claude Code.
+O arquivo `.mcp.json` na raiz já deixa o servidor pronto para o Claude Code (abrindo o Claude Code nesta pasta).
 Claude Desktop (`claude_desktop_config.json`):
 
 ```json
@@ -122,8 +122,33 @@ claude mcp add gerid -- uv run --directory /Users/jeanferreira/code/gerid-adapte
 ```
 
 Pré-requisitos na máquina do servidor: `uv sync` uma vez, token A3 plugado
-e segredos no cofre (para a renovação automática). A primeira chamada com
+e `.env` preenchido (para a renovação automática). A primeira chamada com
 captcha é mais lenta (sobe o browser headless).
+
+## Segredos (`.env`)
+
+Para instalar no computador de um cliente, use o [prompt de instalação](docs/prompt-instalacao.md).
+
+Cada instalação atende **um** titular: o token A3 plugado na máquina dele. Os
+dois segredos ficam em `.env` na raiz do projeto (fora do git):
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+| Variável | Conteúdo |
+|---|---|
+| `GERID_PIN` | PIN do token A3 |
+| `GERID_TOTP_SECRET` | Semente do autenticador do GERID (Base32 ou a URI `otpauth://` do QR), não o código de 6 dígitos |
+
+Com o QR do autenticador salvo como imagem, `uv run gerid-poc totp-import QR.png`
+lê o QR e grava `GERID_TOTP_SECRET` no `.env` sem exibir o segredo.
+
+`GERID_ENV_FILE` aponta para outro arquivo; variáveis já definidas no ambiente
+valem mais que o arquivo. Confira o TOTP com `uv run gerid-poc totp-check`
+(mostra o fim do código atual para comparar com o app) e o resto com
+`uv run gerid-poc diagnose`.
 
 ## Variáveis de ambiente
 
@@ -131,6 +156,7 @@ captcha é mais lenta (sobe o browser headless).
 |---|---|
 | `GERID_TUNNEL=127.0.0.1:8444` | Desvia a 8443 (mTLS/login) para um túnel SSH local |
 | `GERID_TUNNEL_443=127.0.0.1:8445` | Desvia a 443 do GERID para o túnel (o TGC exige o mesmo egresso do login) |
+| `GERID_ENV_FILE` | Troca o arquivo de segredos (padrão `.env` na raiz) |
 | `GERID_STATE_DIR` | Troca o diretório de sessão (padrão `.local/`) |
 | `INSS_BROWSER=cdp` \| `cloak` | Backend do mint de captcha (CLI padrão: `cloak` headless; MCP padrão: `cdp` headless com perfil aquecido) |
 | `INSS_RECAPTCHA_KEY` | Sobrescreve a site key lida na página real (uso normal: não definir) |

@@ -220,15 +220,6 @@ def test_call_never_leaks_traceback():
         run(mcp._call(boom(), "rotulo"))
 
 
-def test_pin_keyring_failure_is_actionable(monkeypatch):
-    import keyring
-    from gerid_adapter import pin as pin_store
-
-    monkeypatch.setattr(keyring, "get_password", lambda *a: (_ for _ in ()).throw(RuntimeError("dbus fora")))
-    with pytest.raises(LookupError, match="Cofre do sistema inacessível"):
-        pin_store.get_pin("123")
-
-
 def test_poster_network_failure_is_actionable(monkeypatch):
     import curl_cffi.requests
     from gerid_adapter.http import impersonated_post_json
@@ -262,7 +253,7 @@ def test_do_diagnose_lists_only_problems(monkeypatch):
 
     monkeypatch.setattr(
         poc_mod, "diagnose",
-        lambda: {"token": "T (série 1)", "pin": "ok (no cofre)", "totp": "ausente no cofre (grave com: x)"},
+        lambda: {"token": "T (série 1)", "pin": "ok (no .env)", "totp": "ausente no .env (grave com: x)"},
     )
     monkeypatch.setattr(
         "gerid_adapter.net.gerid_status",
@@ -279,7 +270,7 @@ def test_do_diagnose_flags_dead_port(monkeypatch):
 
     monkeypatch.setattr(
         poc_mod, "diagnose",
-        lambda: {"token": "T (série 1)", "pin": "ok (no cofre)", "totp": "ok (no cofre)"},
+        lambda: {"token": "T (série 1)", "pin": "ok (no .env)", "totp": "ok (no .env)"},
     )
     monkeypatch.setattr(
         "gerid_adapter.net.gerid_status",

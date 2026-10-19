@@ -36,8 +36,11 @@ def stub(monkeypatch, **effects):
         monkeypatch.setattr(poc, name, make(name))
     monkeypatch.setattr(
         poc, "diagnose",
-        lambda: {"token": "T (série 1)", "pin": "ok (no cofre)", "totp": "ok (no cofre)"},
+        lambda: {"token": "T (série 1)", "pin": "ok (no .env)", "totp": "ok (no .env)"},
     )
+    import gerid_adapter.pin as pin_store
+
+    monkeypatch.setattr(pin_store, "get_totp_secret", lambda: "JBSWY3DPEHPK3PXP")
     import gerid_adapter.api as api_mod
 
     class FakeApi:
@@ -258,20 +261,19 @@ def test_diagnose_unsafe_pin_and_missing_secrets(monkeypatch):
     )
     state = poc.diagnose()
     assert state["pin"].startswith("inseguro")
-    assert "pin-set" in state["pin"] or "inseguro" in state["pin"]
-    assert "totp-set" in state["totp"]
+    assert state["totp"].startswith("ausente") and "sem totp" in state["totp"]
     assert poc.cmd_diagnose(argparse.Namespace()) == 1
 
 
-def test_diagnose_keyring_broken(monkeypatch):
-    fake_hardware(monkeypatch, FakeHardware(), pin=RuntimeError("dbus quebrou"))
-    assert poc.diagnose()["pin"].startswith("cofre")
+def test_diagnose_env_unreadable(monkeypatch):
+    fake_hardware(monkeypatch, FakeHardware(), pin=RuntimeError("env ilegível (.env: Permission denied)"))
+    assert poc.diagnose()["pin"].startswith("env")
 
 
 def test_ensure_stops_when_totp_missing(monkeypatch, tmp_path, capsys):
     (tmp_path / "ifs_auth.jwt").write_text(jwt(-10))
-    fake_hardware(monkeypatch, FakeHardware(), totp=LookupError("sem totp"))
     calls = stub(monkeypatch, cmd_session=1)
+    fake_hardware(monkeypatch, FakeHardware(), totp=LookupError("sem totp"))
     assert poc.ensure_session(argparse.Namespace(dir=str(tmp_path))) == 1
     assert calls == []  # nem tenta authorize sem TOTP
     assert "TOTP" in capsys.readouterr().out
@@ -283,7 +285,7 @@ def test_ensure_reports_login_blockers(monkeypatch, tmp_path, capsys):
     calls = stub(monkeypatch, cmd_session=1, cmd_authorize=0)
     monkeypatch.setattr(
         poc, "diagnose",
-        lambda: {"token": "T (série 1)", "pin": "inseguro: PIN bloqueado", "totp": "ok (no cofre)"},
+        lambda: {"token": "T (série 1)", "pin": "inseguro: PIN bloqueado", "totp": "ok (no .env)"},
     )
     assert poc.ensure_session(argparse.Namespace(dir=str(tmp_path))) == 1
     assert "cmd_login" not in calls  # não tenta login com PIN bloqueado

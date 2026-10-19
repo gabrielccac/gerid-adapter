@@ -1,7 +1,8 @@
 """Prova de conceito: handshake mTLS com o GERID usando a chave do token A3.
 
   uv run gerid-poc check     # sem PIN: token, cadeia e handshake sem certificado de cliente
-  uv run gerid-poc pin-set   # grava o PIN no cofre do sistema (você digita no terminal)
+  uv run gerid-poc totp-import QR.png # lê o QR do GERID e grava o segredo no .env
+  uv run gerid-poc totp-check # confere o GERID_TOTP_SECRET do .env contra o app autenticador
   uv run gerid-poc login     # UM login no token + handshake com certificado + GET no GERID
   uv run gerid-poc authorize # OAuth + TOTP com o TGC salvo (sem PIN)
   uv run gerid-poc session   # troca do access_token + papel e estado p/ o browser (sem PIN)
@@ -261,9 +262,9 @@ def cmd_check(args):
         print(f"  validade: até {chain[0].not_valid_after_utc:%d/%m/%Y}")
         try:
             pin_store.get_pin(token.serial)
-            print("  PIN no cofre: sim")
-        except LookupError:
-            print("  PIN no cofre: não (rode: uv run gerid-poc pin-set)")
+            print("  PIN no .env: sim")
+        except LookupError as error:
+            print(f"  PIN no .env: não ({error})")
     finally:
         token.close()
 
@@ -278,39 +279,28 @@ def cmd_check(args):
         print(f"  {type(error).__name__}: {error}")
 
 
-def cmd_pin_set(args):
-    token = Token(args.module)
+def cmd_totp_import(args):
+    """Lê o QR do GERID numa imagem e grava o segredo no .env, sem exibi-lo."""
     try:
-        pin_store.set_pin_interactive(token.serial)
-    finally:
-        token.close()
-
-
-def cmd_totp_set(args):
-    """Grava o segredo do autenticador do GERID no cofre (do .env do Jurisync ou digitado)."""
-    import getpass
-
-    if args.from_jurisync_env:
-        env = Path.home() / ".config" / "jurisync" / ".env"
-        raw = next(
-            (line.split("=", 1)[1] for line in env.read_text(encoding="utf-8").splitlines()
-             if re.match(r"\s*(export\s+)?INSS_GERID_TOTP_SECRET=", line)),
-            "",
-        )
-        if not raw.strip():
-            print(f"INSS_GERID_TOTP_SECRET não encontrado ou vazio em {env}.")
-            return 1
-    else:
-        raw = getpass.getpass("Segredo do autenticador do GERID (Base32 ou otpauth://): ")
-    try:
-        secret = totp.normalize_secret(raw)
-    except ValueError as error:
+        secret = pin_store.secret_from_qr(args.image)
+    except (OSError, ValueError) as error:
         print(f"Não gravei: {error}")
         return 1
-    pin_store.set_totp_secret(secret)
-    print(f"Segredo TOTP gravado no cofre ({pin_store.SERVICE} / {pin_store.TOTP_ACCOUNT}), {len(secret)} caracteres.")
-    print(f"Confira no app autenticador: o código atual termina em ...{totp.code(secret)[-2:]}"
-          f" (válido por mais {int(totp.seconds_left())}s).")
+    path = pin_store.save_totp_secret(secret)
+    print(f"{pin_store.TOTP_VAR} gravado em {path} (permissão 600).")
+    print("Apague a imagem do QR quando o totp-check conferir com o app.")
+    return cmd_totp_check(args)
+
+
+def cmd_totp_check(args):
+    """Mostra o fim do código atual para conferir o segredo do .env no app autenticador."""
+    try:
+        secret = pin_store.get_totp_secret()
+    except LookupError as error:
+        print(error)
+        return 1
+    print(f"{pin_store.TOTP_VAR} ok: o código atual termina em ...{totp.code(secret)[-2:]}"
+          f" (válido por mais {int(totp.seconds_left())}s). Confira no app autenticador.")
     return 0
 
 
@@ -337,7 +327,7 @@ def cmd_login(args):
         ident, chain = token.end_entity()
         print(f"Token: {token.label} | titular: {chain[0].subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)[0].value}")
         token.login(pin_store.get_pin(token.serial))
-        print("  login no token: OK (PIN lido do cofre)")
+        print("  login no token: OK (PIN lido do .env)")
         key = Pkcs11RSAKey(token, token.private_key(ident), chain[0].public_key().public_numbers())
         print(f"\nHandshake COM certificado de cliente com {HOST}:{PORT}")
         connection, server_cert, elapsed = connect(to_tlslite_chain(chain), key)
@@ -446,7 +436,7 @@ def cmd_authorize(args):
             connection, _, _ = connect(port=port)
             status, headers, body = http_post(connection, urlsplit(action).path, form, port=port, cookies=cookies, referer=url)
             connection.close()
-            print(f"\n[{hop}b] POST {hide_query(action)} (código TOTP gerado do segredo no cofre, não exibido)")
+            print(f"\n[{hop}b] POST {hide_query(action)} (código TOTP gerado do segredo do .env, não exibido)")
             print(f"  resposta: {status} | corpo: {len(body)} bytes")
             cookies.update(cookie_pairs(headers))
             location = ""
@@ -596,7 +586,7 @@ def ensure_session(args, quiet=False):
 
     Cascata: ifs_auth válido → reusar; access_token fresco → só troca+papel;
     TGC válido → authorize; senão login completo. Precisa do token A3 plugado
-    e dos segredos no cofre apenas nos níveis que chegarem até eles.
+    e dos segredos no .env apenas nos níveis que chegarem até eles.
     """
     state_dir = Path(getattr(args, "dir", None) or STATE_DIR)
     with session_lock(state_dir):
@@ -641,7 +631,7 @@ def _ensure_session_locked(state_dir, module, quiet):
     login_blockers = [
         f"{name}: {state[name]}"
         for name in ("token", "pin")
-        if state[name].startswith(("ausente", "inseguro", "cofre"))
+        if state[name].startswith(("ausente", "inseguro", "env"))
     ]
     if login_blockers:
         _report(login_blockers)
@@ -674,7 +664,7 @@ def cmd_watch(args):
 
 
 def diagnose():
-    """Pré-verificação local (sem rede, sem login): A3 plugado? PIN/TOTP no cofre?
+    """Pré-verificação local (sem rede, sem login): A3 plugado? PIN/TOTP no .env?
 
     Devolve {"token": ..., "pin": ..., "totp": ...} só com estado, nunca segredos.
     """
@@ -696,11 +686,11 @@ def diagnose():
         else:
             try:
                 pin_store.get_pin(token.serial)
-                result["pin"] = "ok (no cofre)"
-            except LookupError:
-                result["pin"] = "ausente no cofre (grave com: uv run gerid-poc pin-set)"
+                result["pin"] = "ok (no .env)"
+            except LookupError as error:
+                result["pin"] = f"ausente ({error})"
             except Exception as error:
-                result["pin"] = f"cofre inacessível ({error})"
+                result["pin"] = str(error)
     finally:
         try:
             token.close()
@@ -713,11 +703,11 @@ def diagnose():
 def _totp_state(pin_store):
     try:
         pin_store.get_totp_secret()
-        return "ok (no cofre)"
-    except LookupError:
-        return "ausente no cofre (grave com: uv run gerid-poc totp-set)"
+        return "ok (no .env)"
+    except LookupError as error:
+        return f"ausente ({error})"
     except Exception as error:
-        return f"cofre inacessível ({error})"
+        return str(error)
 
 
 def _report(problems):
@@ -791,13 +781,13 @@ def main(argv=None):
     parser.add_argument("--module", help="biblioteca PKCS#11 (padrão: SafeSign do sistema)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check").set_defaults(func=cmd_check)
-    sub.add_parser("pin-set").set_defaults(func=cmd_pin_set)
     login = sub.add_parser("login")
     login.add_argument("--path", default=CAS_PATH, help="caminho do GET depois do handshake")
     login.set_defaults(func=cmd_login)
-    totp_set = sub.add_parser("totp-set", help="grava o segredo TOTP do GERID no cofre")
-    totp_set.add_argument("--from-jurisync-env", action="store_true", help="lê INSS_GERID_TOTP_SECRET do .env do Jurisync")
-    totp_set.set_defaults(func=cmd_totp_set)
+    totp_import = sub.add_parser("totp-import", help="lê o QR do GERID numa imagem e grava o segredo no .env")
+    totp_import.add_argument("image", help="imagem (PNG/JPG) com o QR do autenticador do GERID")
+    totp_import.set_defaults(func=cmd_totp_import)
+    sub.add_parser("totp-check", help="confere o GERID_TOTP_SECRET do .env contra o app autenticador").set_defaults(func=cmd_totp_check)
     authorize = sub.add_parser("authorize", help="OAuth do portal do INSS com o TGC salvo (sem PIN)")
     authorize.set_defaults(func=cmd_authorize)
     session = sub.add_parser("session", help="troca do access_token + papel e estado p/ o browser (sem PIN)")
@@ -811,7 +801,7 @@ def main(argv=None):
     watch.add_argument("--timeout", type=int, default=3600, help="tempo máximo de espera em segundos")
     watch.add_argument("--interval", type=int, default=30, help="intervalo entre verificações em segundos")
     watch.set_defaults(func=cmd_watch)
-    sub.add_parser("diagnose", help="pré-verificação: A3 plugado? PIN/TOTP no cofre?").set_defaults(func=cmd_diagnose)
+    sub.add_parser("diagnose", help="pré-verificação: A3 plugado? PIN/TOTP no .env?").set_defaults(func=cmd_diagnose)
     api = sub.add_parser("api", help="chamadas read-only à API do portal com o token salvo (sem PIN)")
     api.add_argument("--token", help="arquivo do token (padrão .local/ifs_auth.jwt)")
     api.add_argument("--module", help="biblioteca PKCS#11 (só usada se a sessão precisar de login)")

@@ -9,5 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# PIN do A3 e segredo TOTP
+.env
+.env.*
+!.env.example
+
 # Sessão e páginas capturadas do GERID (dados pessoais)
 .local/

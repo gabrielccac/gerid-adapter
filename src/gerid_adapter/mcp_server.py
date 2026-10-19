@@ -107,7 +107,7 @@ def do_ensure(state_dir=None):
         details = "; ".join(f"{item['item']}: {item['estado']}" for item in problems["problemas"])
         raise RuntimeError(
             f"renovação da sessão falhou ({details or 'sem causa aparente'}). "
-            "Conecte o token A3 e confira os segredos no cofre"
+            "Conecte o token A3 e confira GERID_PIN e GERID_TOTP_SECRET no .env"
         )
     token = (state_dir / "ifs_auth.jwt").read_text().strip()
     after = token_file.stat().st_mtime if token_file.exists() else None
@@ -125,7 +125,7 @@ def do_diagnose():
     problems = [
         {"item": name, "estado": value}
         for name, value in (("token A3", state["token"]), ("PIN", state["pin"]), ("TOTP", state["totp"]))
-        if value.startswith(("ausente", "inseguro", "cofre"))
+        if value.startswith(("ausente", "inseguro", "env"))
     ]
     if net["tcp_8443"].startswith("falhou"):
         problems.append({"item": "rede", "estado": net["veredito"]})
@@ -428,7 +428,7 @@ async def _call(operation, label):
 @server.tool(
     name="gerid_diagnose",
     title="Diagnose GERID prerequisites",
-    description="Pré-verificação: token A3 plugado? PIN/TOTP no cofre? Devolve o que falta fazer, sem segredos. Read-only.",
+    description="Pré-verificação: token A3 plugado? PIN/TOTP no .env? Devolve o que falta fazer, sem segredos. Read-only.",
     annotations=READ_ONLY,
 )
 async def diagnose_tool() -> dict[str, Any]:
@@ -440,7 +440,7 @@ async def diagnose_tool() -> dict[str, Any]:
     title="Ensure GERID session",
     description=(
         "Garante sessão GERID válida e diz por quantos minutos vale. Se expirou, renova sozinho: "
-        "troca de token, TOTP ou, em último caso, login com o token A3 (PIN do cofre; exige a porta 8443 "
+        "troca de token, TOTP ou, em último caso, login com o token A3 (PIN do .env; exige a porta 8443 "
         "acessível). Grava a sessão em .local/. Não altera nada no INSS. As outras ferramentas já chamam isto."
     ),
     annotations=SESSION,

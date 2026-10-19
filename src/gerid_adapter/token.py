@@ -92,7 +92,7 @@ class Token:
             if error.value in (PyKCS11.CKR_PIN_INCORRECT, PyKCS11.CKR_PIN_LOCKED, PyKCS11.CKR_PIN_LEN_RANGE):
                 raise PinError(
                     f"O token recusou o PIN ({PyKCS11.CKR[error.value]}). Não vou tentar de novo: "
-                    "confira o PIN gravado no cofre antes da próxima execução."
+                    "confira o GERID_PIN do .env antes da próxima execução."
                 ) from None
             raise RuntimeError(
                 f"O token A3 recusou a operação ({PyKCS11.CKR.get(error.value, error.value)}). "
