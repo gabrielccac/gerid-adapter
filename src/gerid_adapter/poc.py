@@ -314,6 +314,71 @@ def cmd_totp_set(args):
     return 0
 
 
+def cmd_export(args):
+    """Operador: gera o pacote criptografado com PIN e TOTP de customers/<cliente>/.env."""
+    from gerid_adapter import bundle
+
+    env_file = bundle.CUSTOMERS_DIR / args.customer / ".env"
+    if not env_file.is_file():
+        print(f"Não achei {env_file}.")
+        return 1
+    values = bundle.read_env(env_file)
+    missing = [name for name in (bundle.TOTP_VAR, bundle.PIN_VAR) if not values.get(name)]
+    if missing:
+        print(f"Preencha em {env_file}: {', '.join(missing)}.")
+        return 1
+    try:
+        secret = totp.normalize_secret(values[bundle.TOTP_VAR])
+    except ValueError as error:
+        print(f"{bundle.TOTP_VAR}: {error}")
+        return 1
+    env = {bundle.TOTP_VAR: secret, bundle.PIN_VAR: values[bundle.PIN_VAR]}
+    passphrase = bundle.generate_passphrase()
+    out = Path(args.out or f"{args.customer}.gerid").expanduser()
+    bundle.write_private(out, bundle.seal(env, passphrase, customer=args.customer) + "\n")
+    print(f"Pacote criado: {out} (variáveis: {', '.join(sorted(env))})")
+    print(f"Senha do pacote (envie por OUTRO canal, aparece só aqui): {passphrase}")
+    return 0
+
+
+def cmd_import(args):
+    """Máquina do cliente: abre o pacote e grava PIN (pela série do token plugado) e TOTP no cofre."""
+    import getpass
+
+    from gerid_adapter import bundle
+
+    text = Path(args.bundle).expanduser().read_text(encoding="utf-8")
+    if args.passphrase_stdin:
+        passphrase = sys.stdin.readline().strip()
+    elif args.terminal:
+        passphrase = getpass.getpass("Senha do pacote: ")
+    else:
+        passphrase = bundle.passphrase_from_page(print)
+    try:
+        env = bundle.unseal(text, passphrase)["env"]
+        secret = totp.normalize_secret(env.get(bundle.TOTP_VAR, ""))
+    except ValueError as error:
+        print(f"Não instalei nada: {error}")
+        return 1
+    pin = env.get(bundle.PIN_VAR, "")
+    if not pin:
+        print(f"Não instalei nada: o pacote não tem {bundle.PIN_VAR}.")
+        return 1
+    token = Token(args.module)  # só lê a série; nenhum login, nenhuma tentativa de PIN
+    try:
+        serial, unsafe = token.serial, token.unsafe_pin_state()
+    finally:
+        token.close()
+    pin_store.set_totp_secret(secret)
+    pin_store.set_pin(serial, pin)
+    print(f"Credenciais gravadas no cofre do sistema: TOTP e PIN do token série {serial}.")
+    print(f"Confira no app autenticador: o código atual termina em ...{totp.code(secret)[-2:]}.")
+    if unsafe:
+        print("ATENÇÃO, o token já registra: " + "; ".join(unsafe) + ". Não tente login até conferir o PIN.")
+        return 2
+    return 0
+
+
 def cmd_login(args):
     from gerid_adapter import net as netprobe
 
@@ -798,6 +863,15 @@ def main(argv=None):
     totp_set = sub.add_parser("totp-set", help="grava o segredo TOTP do GERID no cofre")
     totp_set.add_argument("--from-jurisync-env", action="store_true", help="lê INSS_GERID_TOTP_SECRET do .env do Jurisync")
     totp_set.set_defaults(func=cmd_totp_set)
+    export = sub.add_parser("export", help="operador: pacote criptografado com PIN e TOTP de um cliente")
+    export.add_argument("--customer", required=True, help="pasta em customers/ (ex.: victor)")
+    export.add_argument("--out", help="arquivo de saída (padrão <cliente>.gerid)")
+    export.set_defaults(func=cmd_export)
+    import_ = sub.add_parser("import", help="cliente: instala PIN e TOTP de um pacote no cofre (token plugado)")
+    import_.add_argument("bundle", help="arquivo .gerid")
+    import_.add_argument("--terminal", action="store_true", help="pedir a senha no terminal em vez da página local")
+    import_.add_argument("--passphrase-stdin", action="store_true", help="ler a senha da entrada padrão")
+    import_.set_defaults(func=cmd_import)
     authorize = sub.add_parser("authorize", help="OAuth do portal do INSS com o TGC salvo (sem PIN)")
     authorize.set_defaults(func=cmd_authorize)
     session = sub.add_parser("session", help="troca do access_token + papel e estado p/ o browser (sem PIN)")

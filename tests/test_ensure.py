@@ -38,6 +38,9 @@ def stub(monkeypatch, **effects):
         poc, "diagnose",
         lambda: {"token": "T (série 1)", "pin": "ok (no cofre)", "totp": "ok (no cofre)"},
     )
+    import gerid_adapter.pin as pin_mod
+
+    monkeypatch.setattr(pin_mod, "get_totp_secret", lambda: "JBSWY3DPEHPK3PXP")
     import gerid_adapter.api as api_mod
 
     class FakeApi:
@@ -270,8 +273,8 @@ def test_diagnose_keyring_broken(monkeypatch):
 
 def test_ensure_stops_when_totp_missing(monkeypatch, tmp_path, capsys):
     (tmp_path / "ifs_auth.jwt").write_text(jwt(-10))
-    fake_hardware(monkeypatch, FakeHardware(), totp=LookupError("sem totp"))
     calls = stub(monkeypatch, cmd_session=1)
+    fake_hardware(monkeypatch, FakeHardware(), totp=LookupError("sem totp"))
     assert poc.ensure_session(argparse.Namespace(dir=str(tmp_path))) == 1
     assert calls == []  # nem tenta authorize sem TOTP
     assert "TOTP" in capsys.readouterr().out

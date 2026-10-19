@@ -41,6 +41,21 @@ Perfil aquecido padrão do backend `cdp`: `.local/chrome-cdp-profile/` (perfil
 proprietário, fora do git via `.gitignore`, permissão 700). Primeira execução
 aquece o perfil; com ele aquecido, `--browser cdp --headless` passa sem janela.
 
+## Credenciais de clientes
+
+`customers/<cliente>/.env` (fora do git) guarda `GERID_TOTP_SECRET` (Base32 ou `otpauth://`) e
+`GERID_A3_PIN`. O operador gera um pacote criptografado (scrypt + AES-256-GCM, mesmo formato do
+Jurisync) e envia o arquivo e a senha por canais diferentes:
+
+```bash
+uv run gerid-poc export --customer victor --out ~/victor.gerid
+```
+
+Na máquina do cliente, com o token plugado, `uv run gerid-poc import victor.gerid` pede a senha numa
+página local (127.0.0.1) e grava PIN (pela série do token, sem login) e TOTP no cofre do sistema. O
+passo a passo para o cliente colar no Claude fica em `customers/<cliente>/INSTALACAO.md`.
+Token de outra marca: `GERID_PKCS11_MODULE=<biblioteca PKCS#11>` (ou `--module`).
+
 ## Persistência da sessão
 
 `gerid-poc ensure` garante sessão válida e só refaz o que expirou, sem digitar

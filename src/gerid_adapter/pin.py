@@ -42,6 +42,10 @@ def set_pin_interactive(serial):
     print(f"PIN gravado no cofre do sistema ({SERVICE} / {account(serial)}).")
 
 
+def set_pin(serial, pin):
+    keyring.set_password(SERVICE, account(serial), pin)
+
+
 def delete_pin(serial):
     keyring.delete_password(SERVICE, account(serial))
 

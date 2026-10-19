@@ -1,5 +1,6 @@
 """Acesso ao token A3 via PKCS#11: certificados (sem login) e chave privada (com login)."""
 
+import os
 import sys
 
 import PyKCS11
@@ -27,7 +28,7 @@ class PinError(RuntimeError):
 
 class Token:
     def __init__(self, module=None):
-        self.module = module or DEFAULT_MODULES.get(sys.platform)
+        self.module = module or os.environ.get("GERID_PKCS11_MODULE") or DEFAULT_MODULES.get(sys.platform)
         self.lib = PyKCS11.PyKCS11Lib()
         self.lib.load(self.module)
         slots = self.lib.getSlotList(tokenPresent=True)

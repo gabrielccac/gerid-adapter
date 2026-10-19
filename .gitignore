@@ -11,3 +11,6 @@ wheels/
 
 # Sessão e páginas capturadas do GERID (dados pessoais)
 .local/
+
+# Credenciais de clientes (segredos)
+customers/
