@@ -13,6 +13,7 @@ dependencies = [
     "keyring>=25.7.0",
     "pykcs11>=1.5.20",
     "tlslite-ng>=0.8.2",
+    "tzdata>=2026.5",
 ]
 
 [project.scripts]
