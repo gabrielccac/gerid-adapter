@@ -94,7 +94,10 @@ class Token:
                     f"O token recusou o PIN ({PyKCS11.CKR[error.value]}). Não vou tentar de novo: "
                     "confira o PIN gravado no cofre antes da próxima execução."
                 ) from None
-            raise
+            raise RuntimeError(
+                f"O token A3 recusou a operação ({PyKCS11.CKR.get(error.value, error.value)}). "
+                "Confira o token plugado e tente de novo; se persistir, desplugue e replugue."
+            ) from None
         self.logged_in = True
 
     def private_key(self, ident):
