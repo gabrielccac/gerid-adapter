@@ -5,6 +5,8 @@ import base64
 import json
 import time
 
+import pytest
+
 from gerid_adapter import poc
 
 
@@ -356,7 +358,7 @@ def test_end_session_logs_out_server_and_wipes_local_state(monkeypatch, tmp_path
 
     def fake_get(connection, path, port=None, cookies=None):
         sent.append((path, port, dict(cookies)))
-        return "200 OK", [], b"<h1>Sucesso ao se deslogar</h1>"
+        return "HTTP/1.1 200 200", [], b"<h1>Sucesso ao se deslogar</h1>"  # linha de status real do CAS
 
     monkeypatch.setattr(poc, "http_get", fake_get)
     import gerid_adapter.api as api_mod
@@ -370,12 +372,28 @@ def test_end_session_logs_out_server_and_wipes_local_state(monkeypatch, tmp_path
 
     monkeypatch.setattr(api_mod, "PortalApi", Dead)
     result = poc.end_session(tmp_path)
-    assert sent == [("/cas/logout", 443, {"TGC": "TGT-1"})]
+    assert sent == [("/cas/logout", poc.PORT, {"TGC": "TGT-1"})]
     assert result["servidor"]["encerrada"] is True
     assert result["tokenAntigoAindaValidoNoServidor"] is False
     assert not list(tmp_path.glob("*.jwt")) and not (tmp_path / "cookies.json").exists()
     assert not list(tmp_path.glob("*.html")) and not list(tmp_path.glob("*.headers.txt"))
     assert (tmp_path / "downloads" / "p.pdf").is_file()  # downloads ficam
+
+
+@pytest.mark.parametrize("status, body, ok", [
+    ("HTTP/1.1 200 200", b"<h1>Sucesso ao se deslogar</h1>", True),
+    ("HTTP/1.1 302 Found", b"", True),
+    ("HTTP/1.1 200 200", b"<h1>Login</h1>", False),
+    ("HTTP/1.1 500 Erro", b"deslogar", False),
+])
+def test_server_logout_reads_status_code(monkeypatch, status, body, ok):
+    class Conn:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(poc, "connect", lambda port=None, **k: (Conn(), None, 0))
+    monkeypatch.setattr(poc, "http_get", lambda *a, **k: (status, [], body))
+    assert poc._server_logout({"TGC": "TGT-1"}) == (ok, status)
 
 
 def test_end_session_wipes_local_even_if_server_unreachable(monkeypatch, tmp_path):

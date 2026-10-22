@@ -15,6 +15,7 @@ from gerid_adapter.session import (
     exchange,
     js_now,
     read_fragment,
+    read_state,
     save_session,
     select_role,
 )
@@ -104,3 +105,11 @@ def test_read_fragment(tmp_path):
     fragment = tmp_path / "oauth-fragment.txt"
     fragment.write_text("access_token=AT-1&token_type=bearer&expires_in=600")
     assert read_fragment(fragment)["access_token"] == "AT-1"
+
+
+def test_read_state_accepts_legacy_cp1252(tmp_path):
+    legacy = tmp_path / "legacy.json"
+    legacy.write_bytes(json.dumps({"tz": "Horário Padrão de Brasília"}, ensure_ascii=False).encode("cp1252"))
+    current = tmp_path / "current.json"
+    current.write_text(json.dumps({"tz": "Horário Padrão de Brasília"}, ensure_ascii=False), encoding="utf-8")
+    assert read_state(legacy) == read_state(current) == {"tz": "Horário Padrão de Brasília"}

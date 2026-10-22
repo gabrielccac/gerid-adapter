@@ -88,6 +88,17 @@ def build_state(access_token, expires_in, gerid_token, ifs_auth, at=None):
     }
 
 
+def read_state(path):
+    """Lê o portal-session.json. Arquivos gravados antes do utf-8 explícito (Windows) vêm em
+    cp1252 ("Horário Padrão de Brasília" nas datas): utf-8 falha e cai para latin-1."""
+    raw = Path(path).read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    return json.loads(text)
+
+
 def read_fragment(path):
     text = Path(path).read_text(encoding="utf-8").strip()
     return dict(item.split("=", 1) for item in text.split("&") if "=" in item)
