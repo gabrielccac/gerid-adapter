@@ -10,6 +10,7 @@ import binascii
 import json
 import os
 import re
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 
@@ -47,15 +48,33 @@ def decode_download(data):
 SIDECAR_SUFFIX = ".text.json"
 
 
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def safe_name(filename):
+    """Nome de arquivo portável: letras ASCII, dígitos, ponto, hífen e sublinhado, até 128 caracteres.
+
+    Outros sistemas (ex.: o anexo de tarefas do Advbox) só aceitam arquivos por nomes assim.
+    Acentos viram a letra base e o resto vira "_".
+    """
+    base = os.path.basename((filename or "").replace("\\", "/"))
+    ascii_name = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_name).lstrip("._-")
+    stem, dot, ext = name.rpartition(".")
+    if dot and len(name) > 128:
+        name = stem[: 128 - len(ext) - 1] + "." + ext
+    return name[:128]
+
+
 def save_bytes(content, filename, fallback, directory, overwrite=False):
     """Salva e devolve os metadados. Sem `overwrite`, não sobrescreve (sufixos -1, -2...).
 
     `overwrite` serve aos nomes canônicos (ex.: `<protocolo>-processo.pdf`): a cópia
     nova substitui a antiga de forma atômica em vez de acumular duplicatas.
     """
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", os.path.basename(filename or "")).strip()
-    if not name or name in (".", "..") or name.endswith(SIDECAR_SUFFIX):
-        name = fallback
+    name = safe_name(filename)
+    if not name or name.endswith(SIDECAR_SUFFIX):
+        name = safe_name(fallback) or "documento.bin"
     folder = Path(directory)
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     output = folder / name
@@ -64,7 +83,7 @@ def save_bytes(content, filename, fallback, directory, overwrite=False):
         partial.write_bytes(content)
         os.chmod(partial, 0o600)
         os.replace(partial, output)
-        return {"path": str(output), "filename": output.name, "bytes": len(content)}
+        return {"path": str(output), "filename": output.name, "savedAs": output.name, "bytes": len(content)}
     counter = 0
     while output.exists():
         counter += 1
@@ -72,7 +91,7 @@ def save_bytes(content, filename, fallback, directory, overwrite=False):
     with open(output, "xb") as handle:
         handle.write(content)
     os.chmod(output, 0o600)
-    return {"path": str(output), "filename": output.name, "bytes": len(content)}
+    return {"path": str(output), "filename": output.name, "savedAs": output.name, "bytes": len(content)}
 
 
 def cached_analysis(path, content=None):
@@ -85,15 +104,20 @@ def cached_analysis(path, content=None):
     sidecar = path.with_name(path.name + SIDECAR_SUFFIX)
     try:
         if sidecar.stat().st_mtime >= path.stat().st_mtime:
-            return json.loads(sidecar.read_text())
+            return json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass
     parsed = analyze_document(content if content is not None else path.read_bytes(), path.name)
+    # UTF-8 explícito: no Windows o padrão é cp1252 e caracteres de PDF digitalizado ("□")
+    # não cabem. Grava num temporário e troca de uma vez: falha nunca deixa cache vazio,
+    # e o cache é só atalho, então falhar nele não derruba a leitura.
+    partial = sidecar.with_name(f".{sidecar.name}.partial")
     try:
-        sidecar.write_text(json.dumps(parsed, ensure_ascii=False))
-        os.chmod(sidecar, 0o600)
-    except OSError:
-        pass
+        partial.write_text(json.dumps(parsed, ensure_ascii=False), encoding="utf-8")
+        os.chmod(partial, 0o600)
+        os.replace(partial, sidecar)
+    except (OSError, ValueError):
+        partial.unlink(missing_ok=True)
     return parsed
 
 

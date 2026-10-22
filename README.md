@@ -71,7 +71,7 @@ Os comandos `api` renovam sozinhos antes de chamar (`--no-refresh` desliga).
 
 ## Servidor MCP (Claude)
 
-`gerid-mcp` expõe 9 ferramentas (`gerid_diagnose`, `gerid_ensure_session`,
+`gerid-mcp` expõe 10 ferramentas (`gerid_diagnose`, `gerid_ensure_session`, `gerid_end_session`,
 `gerid_list_notifications`, `gerid_search_tasks`, `gerid_get_task`,
 `gerid_get_process`, `gerid_get_attachment`, `gerid_read_document`,
 `gerid_list_downloads`). Documentos são salvos em `.local/downloads/` (0600)
@@ -95,6 +95,14 @@ TOTP no cofre? O `ensure` consulta isso antes de tentar login e aborta com o
 motivo (sem gastar tentativa de PIN); toda falha vira mensagem acionável em
 vez de traceback, e nenhum segredo chega ao agente.
 
+## Encerrar a sessão
+
+`uv run gerid-poc logout` (ou a ferramenta `gerid_end_session`) faz o mesmo que o botão "Sair" do portal:
+`GET /cas/logout` com o TGC (encerra o SSO no servidor) e apaga os tokens e cookies locais; os PDFs
+baixados ficam. Antes de apagar, ele testa se o `ifs_auth` antigo ainda vale no servidor e imprime a
+prova (o JWT é sem estado, então pode seguir válido até o `exp` mesmo após o logout do CAS). A próxima
+consulta refaz o login com o A3. O A3 em si já é liberado a cada login (`Token.close()`).
+
 ## Rede dinâmica
 
 O login mTLS exige TCP na 8443. `gerid-poc login` sonda a porta antes de
@@ -116,7 +124,7 @@ GERID_TUNNEL=127.0.0.1:8444 GERID_TUNNEL_443=127.0.0.1:8445 uv run gerid-poc log
 O usuário SSH do salto precisa de `PermitOpen` para os dois destinos (só
 encaminhamento, sem shell). Sem isso, o CAS rejeita o TGC mintado por outro IP.
 
-O arquivo `.mcp.json` na raiz já deixa o servidor pronto para o Claude Code.
+O arquivo `.mcp.json` na raiz já deixa o servidor pronto para o Claude Code (abra o Claude Code nesta pasta).
 Claude Desktop (`claude_desktop_config.json`):
 
 ```json
@@ -124,7 +132,7 @@ Claude Desktop (`claude_desktop_config.json`):
   "mcpServers": {
     "gerid": {
       "command": "uv",
-      "args": ["run", "--directory", "/Users/jeanferreira/code/gerid-adapter", "gerid-mcp"]
+      "args": ["run", "--directory", "/caminho/para/gerid-adapter", "gerid-mcp"]
     }
   }
 }
@@ -133,10 +141,10 @@ Claude Desktop (`claude_desktop_config.json`):
 Claude Code:
 
 ```bash
-claude mcp add gerid -- uv run --directory /Users/jeanferreira/code/gerid-adapter gerid-mcp
+claude mcp add gerid -- uv run --directory /caminho/para/gerid-adapter gerid-mcp
 ```
 
-Pré-requisitos na máquina do servidor: `uv sync` uma vez, token A3 plugado
+Pré-requisitos na máquina do servidor: `uv sync` e `uv run gerid-poc prepare-browser` (baixa o navegador do captcha) uma vez, token A3 plugado
 e segredos no cofre (para a renovação automática). A primeira chamada com
 captcha é mais lenta (sobe o browser headless).
 
@@ -147,10 +155,13 @@ captcha é mais lenta (sobe o browser headless).
 | `GERID_TUNNEL=127.0.0.1:8444` | Desvia a 8443 (mTLS/login) para um túnel SSH local |
 | `GERID_TUNNEL_443=127.0.0.1:8445` | Desvia a 443 do GERID para o túnel (o TGC exige o mesmo egresso do login) |
 | `GERID_STATE_DIR` | Troca o diretório de sessão (padrão `.local/`) |
+| `GERID_DOWNLOAD_DIR` | Pasta dos PDFs baixados (padrão `~/.local/share/jurisync/documents`). As respostas trazem `savedAs` (nome portável): outro sistema lê o arquivo dessa pasta por esse nome |
+| `GERID_PKCS11_MODULE` | Biblioteca PKCS#11 de tokens que não são SafeSign |
+| `GERID_CAPTCHA_BUDGET` | Segundos até o MCP responder com um aviso em vez de estourar o tempo do cliente (padrão 50) |
 | `INSS_BROWSER=cdp` \| `cloak` | Backend do mint de captcha (CLI padrão: `cloak` headless; MCP padrão: `cdp` headless com perfil aquecido) |
 | `INSS_RECAPTCHA_KEY` | Sobrescreve a site key lida na página real (uso normal: não definir) |
 | `src/gerid_adapter/api.py` | Chamadas read-only à API interna do portal com o token do GERID (tarefa, anexo, processo), por HTTP puro e sem PIN |
-| `src/gerid_adapter/mcp_server.py` | Servidor MCP: 9 ferramentas sobre `session`+`api`+`docs`, com renovação e captcha automáticos |
+| `src/gerid_adapter/mcp_server.py` | Servidor MCP: 10 ferramentas sobre `session`+`api`+`docs`, com renovação e captcha automáticos |
 | `src/gerid_adapter/docs.py` | Leitura local dos PDFs baixados (texto via pypdf) em janelas paginadas |
 | `src/gerid_adapter/net.py` | Prova de conectividade (TCP 443/8443, IP de saída) e espera (`watch`) — sem tocar no token |
 | `src/gerid_adapter/http.py` | Transporte HTTP/1.1 do tlslite-ng, usado pelo `api.py` |

@@ -57,7 +57,7 @@ def load_token(path=None):
     path = Path(path or DEFAULT_TOKEN_PATH)
     if not path.is_file():
         raise FileNotFoundError(f"Token do GERID não encontrado em {path}. Rode antes: uv run gerid-poc authorize")
-    return path.read_text().strip()
+    return path.read_text(encoding="utf-8").strip()
 
 
 def seconds_left(token):

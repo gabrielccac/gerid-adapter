@@ -1,7 +1,7 @@
 """Servidor MCP do GERID: notificações, tarefas, detalhes e documentos via Claude.
 
 Ferramentas de leitura devolvem JSON; as de documento baixam o PDF e devolvem
-o caminho local (`.local/downloads/`, fora do git, 0600) com os metadados.
+o caminho local (pasta de downloads, `GERID_DOWNLOAD_DIR`, 0600) e `savedAs` com os metadados.
 Nenhum token ou segredo aparece nas respostas: só dados do portal.
 
 Uso (Claude Desktop / Code), via `uv`::
@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Annotated, Any
@@ -43,7 +44,13 @@ SESSION = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentH
 LOCAL_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
 Digits = Annotated[str, Field(pattern=r"^\d+$")]
 MaxChars = Annotated[int, Field(ge=1000, le=200_000, description="Tamanho da janela do texto extraído")]
-DOWNLOAD_DIR = STATE_DIR / "downloads"
+# Pasta dos downloads. É um contrato só de arquivos: quem quiser usar um documento baixado (outro MCP,
+# outro sistema) lê desta pasta pelo nome em `savedAs`. O padrão é a pasta compartilhada de documentos
+# que os conectores do Jurisync já usam; GERID_DOWNLOAD_DIR escolhe outra.
+def _download_dir():
+    return Path(os.environ.get("GERID_DOWNLOAD_DIR") or Path.home() / ".local" / "share" / "jurisync" / "documents")
+
+
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 server = MCPServer("gerid-adapter", version="1.0.0")
@@ -73,7 +80,7 @@ def _portal():
 
 
 def _session_state(state_dir):
-    return json.loads((state_dir / "portal-session.json").read_text())
+    return json.loads((state_dir / "portal-session.json").read_text(encoding="utf-8"))
 
 
 def _backends():
@@ -109,10 +116,17 @@ def do_ensure(state_dir=None):
             f"renovação da sessão falhou ({details or 'sem causa aparente'}). "
             "Conecte o token A3 e confira os segredos no cofre"
         )
-    token = (state_dir / "ifs_auth.jwt").read_text().strip()
+    token = (state_dir / "ifs_auth.jwt").read_text(encoding="utf-8").strip()
     after = token_file.stat().st_mtime if token_file.exists() else None
     return {"ok": True, "refreshed": before is None or after != before,
             "valid_minutes": seconds_left(token) // 60}
+
+
+def do_end_session(state_dir=None):
+    """Encerra a sessão no GERID e apaga os tokens locais (os downloads ficam)."""
+    from gerid_adapter.poc import end_session
+
+    return end_session(Path(state_dir or _state_dir()))
 
 
 def do_diagnose():
@@ -134,10 +148,21 @@ def do_diagnose():
             "egress_ip": net["egress_ip"], "veredito_rede": net["veredito"]}
 
 
+def _cdp_ready():
+    return recaptcha_mod.DEFAULT_CDP_PROFILE.is_dir()
+
+
+def _attempts():
+    """Navegadores a tentar, em ordem. O cdp só entra com perfil aquecido (máquina nova não tem);
+    sobrando um só, ele ganha uma 2ª tentativa: a nota do reCAPTCHA varia de um token para outro."""
+    usable = [name for name in _backends() if name != "cdp" or _cdp_ready()]
+    return usable if len(usable) > 1 else usable * 2
+
+
 def _with_fresh_captcha(factory, state_dir):
-    """Minta e chama; se o captcha for recusado (400) ou o mint falhar, tenta o outro navegador."""
+    """Minta e chama; se o captcha for recusado (400) ou o mint falhar, tenta de novo (outro navegador se houver)."""
     last = None
-    for backend in _backends():
+    for backend in _attempts():
         try:
             token = _mint(state_dir, backend=backend)
         except RuntimeError as error:  # mint falhou neste navegador: tenta o próximo
@@ -324,10 +349,10 @@ def attachment_filename(disposition, fallback):
 
 
 def save_download(data, filename, fallback, directory=None):
-    """Decodifica o Base64, salva em `.local/downloads/` e devolve os metadados."""
+    """Decodifica o Base64, salva na pasta de downloads e devolve os metadados."""
     content = docs.decode_download(data)
     meta = docs.save_bytes(content, attachment_filename(filename, fallback), fallback,
-                           directory or DOWNLOAD_DIR)
+                           directory or _download_dir())
     return {**meta, "is_pdf": content.startswith(b"%PDF-")}
 
 
@@ -344,7 +369,7 @@ def do_get_attachment(protocolo, anexo_id, filename=None, portal=None, directory
     # não muda, baixar de novo substitui em vez de criar cópias -1, -2...
     original = attachment_filename(payload["filename"], "anexo.bin")
     name = filename or f"{protocolo}-{anexo_id}-{original}"
-    meta = docs.save_bytes(content, name, fallback, directory or DOWNLOAD_DIR, overwrite=not filename)
+    meta = docs.save_bytes(content, name, fallback, directory or _download_dir(), overwrite=not filename)
     return {"protocolo": protocolo, "anexoId": anexo_id, **meta,
             **docs.slice_text(docs.cached_analysis(meta["path"], content), 0, max_chars)}
 
@@ -358,14 +383,14 @@ def do_get_process(protocolo, filename=None, portal=None, directory=None, max_ch
     Sem `filename`, usa o nome canônico `<protocolo>-processo.pdf`: reaproveita a
     cópia de até 1 h (sem rede) e, ao baixar de novo, substitui a antiga.
     """
-    folder = Path(directory or DOWNLOAD_DIR)
+    folder = Path(directory or _download_dir())
     canonical = folder / f"{protocolo}-processo.pdf"
     if not filename and not refresh and canonical.is_file():
         age = time.time() - canonical.stat().st_mtime
         if age < PROCESS_REUSE_SECONDS:
             content = canonical.read_bytes()
             return {"protocolo": int(protocolo), "reutilizado": True, "baixadoHaMinutos": int(age // 60),
-                    "path": str(canonical), "filename": canonical.name, "bytes": len(content),
+                    "path": str(canonical), "filename": canonical.name, "savedAs": canonical.name, "bytes": len(content),
                     **docs.slice_text(docs.cached_analysis(canonical, content), 0, max_chars)}
     do_ensure()
     payload = (portal or _portal()).process(protocolo)
@@ -380,7 +405,7 @@ def do_get_process(protocolo, filename=None, portal=None, directory=None, max_ch
 
 def do_read_document(filename, offset=0, max_chars=40_000, directory=None):
     """Continua a leitura de um arquivo já baixado (janela seguinte do texto)."""
-    return docs.read_saved_document(filename, offset, max_chars, directory or DOWNLOAD_DIR)
+    return docs.read_saved_document(filename, offset, max_chars, directory or _download_dir())
 
 
 def document_result(file):
@@ -400,7 +425,7 @@ def document_result(file):
 
 def do_list_downloads(directory=None):
     """Arquivos já baixados pelo `gerid_get_attachment`/`gerid_get_process`."""
-    folder = Path(directory or DOWNLOAD_DIR)
+    folder = Path(directory or _download_dir())
     if not folder.is_dir():
         return {"files": []}
     files = [
@@ -411,18 +436,58 @@ def do_list_downloads(directory=None):
     return {"files": sorted(files, key=lambda item: item["filename"])}
 
 
-async def _call(operation, label):
+# Abaixo dos 60 s em que o cliente MCP desiste, para a ferramenta explicar o atraso.
+CAPTCHA_BUDGET = float(os.environ.get("GERID_CAPTCHA_BUDGET", "50"))
+
+
+def _prepare_browser_in_background():
+    """Baixa o Chromium do cloak enquanto o servidor espera a primeira chamada."""
+    if "cloak" not in _backends():
+        return
+
+    def run():
+        try:
+            recaptcha_mod.prepare_cloak()
+        except Exception as error:  # o mint repete e reporta; aqui só registra
+            print(f"Preparo do navegador do captcha falhou: {sanitize(error)}", file=sys.stderr)
+
+    threading.Thread(target=run, name="prepare-cloak", daemon=True).start()
+
+
+async def _call(operation, label, budget=None):
     # Sem redirect_stdout aqui (troca global, insegura entre threads): o stdio_server
     # do mcp>=2.3 desvia o fd 1 para o stderr enquanto serve, e o main() tira o
     # buffer do sys.stdout para nada sobrar para o pipe no encerramento.
     try:
         # Playwright sync (mint do captcha) não roda dentro do loop: vai para uma thread.
-        value = await operation if hasattr(operation, "__await__") else await asyncio.to_thread(operation)
+        pending = operation if hasattr(operation, "__await__") else asyncio.to_thread(operation)
+        value = await asyncio.wait_for(pending, budget) if budget else await pending
+    except TimeoutError:
+        # O cliente MCP (Claude Desktop) desiste em 60 s com um -32001 sem explicação; respondemos
+        # antes. A thread segue até o fim (ex.: o download do navegador termina e a próxima passa).
+        raise ToolError(
+            f"{label}: sem resposta em {budget:.0f}s. Na primeira vez o navegador do captcha é baixado "
+            "(centenas de MB) e isso continua em segundo plano: tente de novo em 1 a 2 minutos."
+        ) from None
     except (ApiError, ValueError, RuntimeError, LookupError, FileNotFoundError, OSError) as error:
         raise ToolError(f"{label}: {sanitize(error) or 'falhou'}") from error
     except Exception as error:  # nunca vazar traceback: agente recebe mensagem útil
         raise ToolError(f"{label}: falha inesperada ({type(error).__name__}): {sanitize(error) or 'sem detalhes'}") from error
     return value if isinstance(value, dict) else {"result": value}
+
+
+@server.tool(
+    name="gerid_end_session",
+    title="End GERID session",
+    description=(
+        "Encerra a sessão: faz o logout do GERID (CAS) e apaga os tokens e cookies locais; os PDFs baixados ficam. "
+        "Use só quando o usuário pedir para sair/encerrar. A próxima consulta refaz o login com o token A3 "
+        "(precisa estar plugado). Não altera nada no INSS além da sessão."
+    ),
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True),
+)
+async def end_session_tool() -> dict[str, Any]:
+    return await _call(lambda: do_end_session(), "gerid_end_session")
 
 
 @server.tool(
@@ -460,7 +525,7 @@ async def ensure_session_tool() -> dict[str, Any]:
     annotations=READ_ONLY,
 )
 async def list_notifications_tool(first: Annotated[int, Field(ge=0)] = 0) -> dict[str, Any]:
-    return await _call(lambda: do_notifications(first), "gerid_list_notifications")
+    return await _call(lambda: do_notifications(first), "gerid_list_notifications", CAPTCHA_BUDGET)
 
 
 @server.tool(
@@ -492,6 +557,7 @@ async def search_tasks_tool(
             situacaoTarefa=situacaoTarefa,
         ),
         "gerid_search_tasks",
+        CAPTCHA_BUDGET,
     )
 
 
@@ -515,7 +581,8 @@ async def get_task_tool(protocolo: Digits, full: bool = False) -> dict[str, Any]
     description=(
         "Baixa o relatório consolidado do processo (PDF com tarefa, anexos, despachos, CNIS e decisão) e devolve "
         "a 1ª janela do texto; continue com gerid_read_document(filename, nextOffset). Reaproveita a cópia de "
-        "até 1 h sem tocar no portal; refresh=true força baixar de novo."
+        "até 1 h sem tocar no portal; refresh=true força baixar de novo. O arquivo fica na pasta de downloads com o "
+        "nome em savedAs (outras ferramentas anexam o arquivo por esse nome)."
     ),
     annotations=LOCAL_WRITE,
 )
@@ -530,7 +597,10 @@ async def get_process_tool(
 @server.tool(
     name="gerid_get_attachment",
     title="Get GERID attachment",
-    description="Baixa um anexo da tarefa e devolve a 1ª janela do texto extraído para análise; continue com gerid_read_document.",
+    description=(
+        "Baixa um anexo da tarefa e devolve a 1ª janela do texto extraído para análise; continue com "
+        "gerid_read_document. O arquivo fica na pasta de downloads com o nome em savedAs."
+    ),
     annotations=LOCAL_WRITE,
 )
 async def get_attachment_tool(
@@ -572,6 +642,7 @@ def main(argv=None):
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
+    _prepare_browser_in_background()
     if not args.http:
         # Os prints da cascata (poc.py) vão para o fd 1, que o stdio_server desvia
         # para o stderr enquanto serve. Sem buffer, cada print sai na hora; com

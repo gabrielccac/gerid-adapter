@@ -89,7 +89,7 @@ def build_state(access_token, expires_in, gerid_token, ifs_auth, at=None):
 
 
 def read_fragment(path):
-    text = Path(path).read_text().strip()
+    text = Path(path).read_text(encoding="utf-8").strip()
     return dict(item.split("=", 1) for item in text.split("&") if "=" in item)
 
 
@@ -107,7 +107,7 @@ def save_session(directory, access_token, expires_in, gerid_token, ifs_auth):
     }
     for name, content in files.items():
         target = directory / name
-        target.write_text(content if content.endswith("\n") else content + "\n")
+        target.write_text(content if content.endswith("\n") else content + "\n", encoding="utf-8")
         target.chmod(0o600)
     return {name: str(directory / name) for name in files}
 

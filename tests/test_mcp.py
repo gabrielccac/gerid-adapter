@@ -210,6 +210,30 @@ def test_call_wraps_errors_as_tool_error():
         run(mcp._call(boom(), "rotulo"))
 
 
+def test_call_over_budget_explains_instead_of_client_timeout():
+    import time
+
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    with pytest.raises(ToolError, match=r"rotulo: sem resposta em 0s.*tente de novo"):
+        run(mcp._call(lambda: time.sleep(0.3), "rotulo", budget=0.05))
+    assert run(mcp._call(lambda: {"ok": 1}, "rotulo", budget=5)) == {"ok": 1}
+
+
+def test_browser_prepared_in_background_only_for_cloak(monkeypatch):
+    import threading
+
+    started = threading.Event()
+    monkeypatch.setattr(mcp.recaptcha_mod, "prepare_cloak", started.set)
+    monkeypatch.setenv("INSS_BROWSER", "cloak")
+    mcp._prepare_browser_in_background()
+    assert started.wait(2)
+
+    monkeypatch.setattr(mcp, "_backends", lambda: ["cdp"])
+    monkeypatch.setattr(mcp.recaptcha_mod, "prepare_cloak", lambda: pytest.fail("não deve baixar"))
+    mcp._prepare_browser_in_background()
+
+
 def test_call_never_leaks_traceback():
     from mcp.server.mcpserver.exceptions import ToolError
 
@@ -425,6 +449,7 @@ def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, 
     from gerid_adapter.api import ApiError
 
     monkeypatch.setenv("INSS_BROWSER", "cdp")
+    monkeypatch.setattr(mcp, "_cdp_ready", lambda: True)
     used = []
     monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: used.append(backend) or f"RC-{backend}")
 
@@ -441,6 +466,7 @@ def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, 
 
 def test_fresh_captcha_switches_browser_when_mint_fails(monkeypatch, tmp_path):
     monkeypatch.delenv("INSS_BROWSER", raising=False)
+    monkeypatch.setattr(mcp, "_cdp_ready", lambda: True)
 
     def mint(state_dir, backend=None):
         if backend == "cloak":
@@ -449,3 +475,45 @@ def test_fresh_captcha_switches_browser_when_mint_fails(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp, "_mint", mint)
     assert mcp._with_fresh_captcha(lambda token: {"ok": token}, tmp_path) == {"ok": "RC-cdp"}
+
+
+def test_fresh_captcha_retries_cloak_when_cdp_has_no_profile(monkeypatch, tmp_path):
+    """Máquina recém-instalada: sem perfil cdp, um 400 do cloak ganha uma 2ª tentativa com token novo."""
+    from gerid_adapter.api import ApiError
+
+    monkeypatch.delenv("INSS_BROWSER", raising=False)
+    monkeypatch.setattr(mcp, "_cdp_ready", lambda: False)
+    used = []
+    monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: used.append(backend) or f"RC-{len(used)}")
+
+    def call(token):
+        if token == "RC-1":
+            error = ApiError("POST x falhou (400): Erro de validação do reCAPTCHA.")
+            error.status = 400
+            raise error
+        return {"ok": token}
+
+    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-2"}
+    assert used == ["cloak", "cloak"]
+
+
+def test_download_dir_follows_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("GERID_DOWNLOAD_DIR", str(tmp_path / "docs"))
+    assert mcp._download_dir() == tmp_path / "docs"
+    monkeypatch.delenv("GERID_DOWNLOAD_DIR")
+    assert mcp._download_dir().parts[-4:] == (".local", "share", "jurisync", "documents")
+
+
+def test_get_process_saves_in_configured_folder_and_reports_saved_as(monkeypatch, tmp_path):
+    monkeypatch.setenv("GERID_DOWNLOAD_DIR", str(tmp_path / "docs"))
+    monkeypatch.setattr(mcp, "do_ensure", lambda *a, **k: None)
+    pdf = base64.b64encode(b"%PDF-1.4 x").decode()
+
+    class Portal:
+        def process(self, protocolo):
+            return {"protocolo": int(protocolo), "relatorio": pdf}
+
+    first = mcp.do_get_process("74062872", portal=Portal())
+    assert first["savedAs"] == "74062872-processo.pdf"
+    assert (tmp_path / "docs" / "74062872-processo.pdf").is_file()
+    assert mcp.do_get_process("74062872", portal=Portal())["savedAs"] == "74062872-processo.pdf"  # cópia reutilizada
