@@ -98,9 +98,12 @@ vez de traceback, e nenhum segredo chega ao agente.
 ## Encerrar a sessão
 
 `uv run gerid-poc logout` (ou a ferramenta `gerid_end_session`) faz o mesmo que o botão "Sair" do portal:
-`GET /cas/logout` com o TGC (encerra o SSO no servidor) e apaga os tokens e cookies locais; os PDFs
-baixados ficam. Antes de apagar, ele testa se o `ifs_auth` antigo ainda vale no servidor e imprime a
-prova (o JWT é sem estado, então pode seguir válido até o `exp` mesmo após o logout do CAS). A próxima
+`GET /cas/logout` na 8443 (o CAS) com o TGC, que encerra o SSO no servidor ("Sucesso ao se deslogar"), e
+apaga os tokens e cookies locais; os PDFs baixados ficam. O logout **não revoga** o `ifs_auth` já emitido:
+é um JWT sem estado, validado na API só por assinatura e `exp`, e não há endpoint de revogação no fluxo
+`response_type=token`. Validado em produção: depois do logout, o mesmo bearer ainda passa em `alive()` e
+puxa notificações até o `exp` (~16h). Por isso o encerramento de verdade é apagar o token local; antes de
+apagar, o comando testa o token antigo e imprime a prova (`tokenAntigoAindaValidoNoServidor`). A próxima
 consulta refaz o login com o A3. O A3 em si já é liberado a cada login (`Token.close()`).
 
 ## Rede dinâmica

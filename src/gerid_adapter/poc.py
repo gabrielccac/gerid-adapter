@@ -577,9 +577,10 @@ def _captcha_call(args, client, operation):
     """Minta e chama; diante de 400 (ex.: perfil ainda aquecendo), tenta 1x com token novo."""
     from gerid_adapter import api as api_mod
     from gerid_adapter import recaptcha as recaptcha_mod
+    from gerid_adapter.session import read_state
 
     try:
-        state = json.loads(Path(args.session_state).read_text(encoding="utf-8"))
+        state = read_state(args.session_state)
     except OSError:
         return None, f"Sem estado do portal em {args.session_state}; rode antes: uv run gerid-poc session"
     last = None
@@ -757,18 +758,23 @@ SESSION_FILES = ("cookies.json", "oauth-fragment.txt", "ifs_auth.jwt", "gerid_to
 
 
 def _server_logout(cookies):
-    """GET /cas/logout com o TGC: encerra o SSO no servidor. Devolve (ok, detalhe)."""
+    """GET /cas/logout com o TGC na 8443 (o CAS, como o botão "Sair"): encerra o SSO. Devolve (ok, detalhe).
+
+    Não revoga o `ifs_auth` já emitido: é um JWT sem estado e segue valendo na API até o `exp`.
+    """
     try:
-        connection, _, _ = connect(port=443)
+        connection, _, _ = connect(port=PORT)
     except Exception as error:
         return False, f"sem conexão com o GERID ({type(error).__name__}): {error}"
     try:
-        status, _, body = http_get(connection, LOGOUT_PATH, port=443, cookies=cookies)
+        status, _, body = http_get(connection, LOGOUT_PATH, port=PORT, cookies=cookies)
     except Exception as error:
         return False, f"falha na chamada ({type(error).__name__}): {error}"
     finally:
         connection.close()
-    done = status.startswith(("200", "30")) and (b"deslogar" in body.lower() or status.startswith("30"))
+    parts = status.split()
+    code = parts[1] if len(parts) > 1 and parts[0].startswith("HTTP/") else (parts[0] if parts else "")
+    done = code.startswith("30") or (code == "200" and b"deslog" in body.lower())
     return done, status
 
 

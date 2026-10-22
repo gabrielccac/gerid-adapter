@@ -36,7 +36,7 @@ from gerid_adapter import docs
 from gerid_adapter import recaptcha as recaptcha_mod
 from gerid_adapter.api import ApiError, PortalApi, seconds_left
 from gerid_adapter.poc import STATE_DIR, ensure_session
-from gerid_adapter.session import js_now
+from gerid_adapter.session import js_now, read_state
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 # Não muda nada no INSS, mas pode usar o token A3/PIN e gravar a sessão em .local/.
@@ -80,7 +80,7 @@ def _portal():
 
 
 def _session_state(state_dir):
-    return json.loads((state_dir / "portal-session.json").read_text(encoding="utf-8"))
+    return read_state(state_dir / "portal-session.json")
 
 
 def _backends():
