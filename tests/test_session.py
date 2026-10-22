@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -94,7 +95,7 @@ def test_save_session_writes_files_with_restricted_mode(tmp_path):
     saved = save_session(tmp_path, "AT-1", "600", GERID, IFS)
     assert set(saved) == {"gerid_token.jwt", "ifs_auth.jwt", "portal-session.json"}
     for name in saved:
-        assert (tmp_path / name).stat().st_mode & 0o777 == 0o600
+        assert os.name == "nt" or (tmp_path / name).stat().st_mode & 0o777 == 0o600  # Windows não tem modo Unix
     state = json.loads((tmp_path / "portal-session.json").read_text())
     assert state["ifs_auth"] == IFS
 

@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import os
 
 import pytest
 
@@ -28,7 +29,7 @@ def test_save_download_writes_restricted_file(tmp_path):
     data = base64.b64encode(b"%PDF-1.4 oi").decode()
     meta = mcp.save_download(data, 'attachment; filename="doc.pdf"', "fb.bin", tmp_path)
     assert meta["filename"] == "doc.pdf" and meta["bytes"] == 11 and meta["is_pdf"]
-    assert (tmp_path / "doc.pdf").stat().st_mode & 0o777 == 0o600
+    assert os.name == "nt" or (tmp_path / "doc.pdf").stat().st_mode & 0o777 == 0o600  # Windows não tem modo Unix
     again = mcp.save_download(data, 'attachment; filename="doc.pdf"', "fb.bin", tmp_path)
     assert again["filename"] == "doc-1.pdf"  # não sobrescreve
 

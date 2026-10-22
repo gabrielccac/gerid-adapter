@@ -1,6 +1,7 @@
 """Extração de texto e janelas, com PDF mínimo construído aqui (sem rede)."""
 
 import base64
+import os
 
 import pytest
 
@@ -38,7 +39,7 @@ def test_decode_download_validates():
 def test_save_bytes_no_overwrite_and_perms(tmp_path):
     first = docs.save_bytes(b"1", "../x.pdf", "fb.bin", tmp_path)
     assert first["filename"] == "x.pdf"
-    assert (tmp_path / "x.pdf").stat().st_mode & 0o777 == 0o600
+    assert os.name == "nt" or (tmp_path / "x.pdf").stat().st_mode & 0o777 == 0o600  # Windows não tem modo Unix
     second = docs.save_bytes(b"22", "../x.pdf", "fb.bin", tmp_path)
     assert second["filename"] == "x-1.pdf" and second["bytes"] == 2
 
@@ -87,7 +88,7 @@ def test_cached_analysis_parses_once(monkeypatch, tmp_path):
     assert docs.cached_analysis(pdf)["markdown"] == "T"
     assert docs.cached_analysis(pdf)["markdown"] == "T"
     assert calls == ["a.pdf"]  # segunda leitura veio do cache
-    assert (tmp_path / "a.pdf.text.json").stat().st_mode & 0o777 == 0o600
+    assert os.name == "nt" or (tmp_path / "a.pdf.text.json").stat().st_mode & 0o777 == 0o600  # Windows não tem modo Unix
 
 
 def test_save_bytes_overwrite_replaces_canonical(tmp_path):
