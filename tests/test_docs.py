@@ -1,6 +1,7 @@
 """Extração de texto e janelas, com PDF mínimo construído aqui (sem rede)."""
 
 import base64
+import os
 
 import pytest
 
@@ -38,7 +39,7 @@ def test_decode_download_validates():
 def test_save_bytes_no_overwrite_and_perms(tmp_path):
     first = docs.save_bytes(b"1", "../x.pdf", "fb.bin", tmp_path)
     assert first["filename"] == "x.pdf"
-    assert (tmp_path / "x.pdf").stat().st_mode & 0o777 == 0o600
+    assert os.name == "nt" or (tmp_path / "x.pdf").stat().st_mode & 0o777 == 0o600  # Windows não tem modo Unix
     second = docs.save_bytes(b"22", "../x.pdf", "fb.bin", tmp_path)
     assert second["filename"] == "x-1.pdf" and second["bytes"] == 2
 
@@ -87,7 +88,7 @@ def test_cached_analysis_parses_once(monkeypatch, tmp_path):
     assert docs.cached_analysis(pdf)["markdown"] == "T"
     assert docs.cached_analysis(pdf)["markdown"] == "T"
     assert calls == ["a.pdf"]  # segunda leitura veio do cache
-    assert (tmp_path / "a.pdf.text.json").stat().st_mode & 0o777 == 0o600
+    assert os.name == "nt" or (tmp_path / "a.pdf.text.json").stat().st_mode & 0o777 == 0o600  # Windows não tem modo Unix
 
 
 def test_save_bytes_overwrite_replaces_canonical(tmp_path):
@@ -97,3 +98,63 @@ def test_save_bytes_overwrite_replaces_canonical(tmp_path):
     meta = docs.save_bytes(b"v2", "p.pdf", "p.pdf", tmp_path, overwrite=True)
     assert meta["filename"] == "p.pdf" and (tmp_path / "p.pdf").read_bytes() == b"v2"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["p.pdf"]
+
+
+def test_cached_analysis_writes_utf8_even_on_a_narrow_locale(tmp_path):
+    """Windows grava em cp1252 por padrão e "□" (PDF digitalizado) não cabe: o cache tem de sair em UTF-8.
+
+    Reproduz num processo com locale ASCII (LC_ALL=C, sem o modo UTF-8 do Python), que falha igual.
+    """
+    import os
+    import subprocess
+    import sys
+
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"%PDF-1.4 x")
+    script = (
+        "import sys; from gerid_adapter import docs\n"
+        "docs.analyze_document = lambda content, name: {'markdown': 'campo \\u25a1 vazio'}\n"
+        "print(docs.cached_analysis(sys.argv[1])['markdown'].encode('unicode_escape').decode())\n"
+    )
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONIOENCODING": "ascii"}
+    done = subprocess.run([sys.executable, "-c", script, str(pdf)], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert "\\u25a1" in done.stdout
+    sidecar = tmp_path / "p.pdf.text.json"
+    assert "□" in sidecar.read_bytes().decode("utf-8")
+    assert docs.cached_analysis(pdf)["markdown"] == "campo □ vazio"  # e relê do cache
+
+
+def test_cached_analysis_survives_cache_write_failure(monkeypatch, tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.4 x")
+    monkeypatch.setattr(docs, "analyze_document", lambda content, name: {"markdown": "T"})
+
+    def broken(*args, **kwargs):
+        raise UnicodeEncodeError("charmap", "□", 0, 1, "character maps to <undefined>")
+
+    monkeypatch.setattr(docs.Path, "write_text", broken)
+    assert docs.cached_analysis(pdf)["markdown"] == "T"  # a leitura não cai por causa do cache
+    assert not (tmp_path / "a.pdf.text.json").exists()  # nada de cache vazio
+    assert not list(tmp_path.glob(".*partial"))
+
+
+def test_safe_name_is_portable():
+    assert docs.safe_name("Despacho de Análise.pdf") == "Despacho_de_Analise.pdf"
+    assert docs.safe_name("../../etc/passwd") == "passwd"
+    assert docs.safe_name("..\\dir\\ç ã.pdf") == "c_a.pdf"
+    assert docs.safe_name("___.pdf") == "pdf"
+    assert docs.safe_name("") == ""
+    long = docs.safe_name("a" * 300 + ".pdf")
+    assert len(long) == 128 and long.endswith(".pdf")
+    for raw in ("Relatório 74062872.pdf", "x y", "😀.pdf"):
+        name = docs.safe_name(raw)
+        assert not name or docs.SAFE_NAME.fullmatch(name)
+
+
+def test_save_bytes_reports_saved_as_with_a_portable_name(tmp_path):
+    meta = docs.save_bytes(b"1", "Despacho de Análise.pdf", "fb.bin", tmp_path)
+    assert meta["savedAs"] == meta["filename"] == "Despacho_de_Analise.pdf"
+    assert (tmp_path / "Despacho_de_Analise.pdf").is_file()
+    fallback = docs.save_bytes(b"2", "😀", "123-9.bin", tmp_path)
+    assert fallback["savedAs"] == "123-9.bin"

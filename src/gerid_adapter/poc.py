@@ -214,13 +214,13 @@ def save_state(name, status, headers, body):
     os.chmod(STATE_DIR, 0o700)
     (STATE_DIR / f"{name}.html").write_bytes(body)
     cookies_file = STATE_DIR / "cookies.json"
-    cookies = json.loads(cookies_file.read_text()) if cookies_file.exists() else {}
+    cookies = json.loads(cookies_file.read_text(encoding="utf-8")) if cookies_file.exists() else {}
     cookies.update(cookie_pairs(headers))
-    cookies_file.write_text(json.dumps(cookies))
+    cookies_file.write_text(json.dumps(cookies), encoding="utf-8")
     os.chmod(cookies_file, 0o600)
     (STATE_DIR / f"{name}.headers.txt").write_text(status + "\n" + "\n".join(
         h if not h.lower().startswith("set-cookie") else h.split("=", 1)[0] + "=<oculto>" for h in headers
-    ))
+    ), encoding="utf-8")
 
 
 def parse_page(body):
@@ -379,6 +379,15 @@ def cmd_import(args):
     return 0
 
 
+def cmd_prepare_browser(args):
+    """Baixa já o Chromium do captcha (cloak), para a primeira consulta do MCP não estourar o tempo."""
+    from gerid_adapter import recaptcha
+
+    print("Baixando o navegador do captcha se faltar (centenas de MB na primeira vez)...")
+    print(f"Pronto: {recaptcha.prepare_cloak()}")
+    return 0
+
+
 def cmd_login(args):
     from gerid_adapter import net as netprobe
 
@@ -454,7 +463,7 @@ def cmd_authorize(args):
     from urllib.parse import urlencode
 
     cookies_file = STATE_DIR / "cookies.json"
-    cookies = json.loads(cookies_file.read_text()) if cookies_file.exists() else {}
+    cookies = json.loads(cookies_file.read_text(encoding="utf-8")) if cookies_file.exists() else {}
     if "TGC" not in cookies:
         print("Sem TGC salvo; rode antes: uv run gerid-poc login")
         return 1
@@ -530,12 +539,12 @@ def cmd_authorize(args):
                 break
         if "#" in location and "access_token" in location.split("#", 1)[1]:
             fragment = STATE_DIR / "oauth-fragment.txt"
-            fragment.write_text(location.split("#", 1)[1])
+            fragment.write_text(location.split("#", 1)[1], encoding="utf-8")
             os.chmod(fragment, 0o600)
             print("  access_token recebido e salvo em .local/oauth-fragment.txt (não exibido)")
             break
         url = location
-    cookies_file.write_text(json.dumps(cookies))
+    cookies_file.write_text(json.dumps(cookies), encoding="utf-8")
     os.chmod(cookies_file, 0o600)
     return 0
 
@@ -570,7 +579,7 @@ def _captcha_call(args, client, operation):
     from gerid_adapter import recaptcha as recaptcha_mod
 
     try:
-        state = json.loads(Path(args.session_state).read_text())
+        state = json.loads(Path(args.session_state).read_text(encoding="utf-8"))
     except OSError:
         return None, f"Sem estado do portal em {args.session_state}; rode antes: uv run gerid-poc session"
     last = None
@@ -605,7 +614,7 @@ def _try_session(state_dir):
     if cmd_session(args) != 0:
         return False
     try:
-        return ifs.stat().st_mtime > before and session_mod.seconds_left(ifs.read_text().strip()) > 0
+        return ifs.stat().st_mtime > before and session_mod.seconds_left(ifs.read_text(encoding="utf-8").strip()) > 0
     except (OSError, ValueError):
         return False
 
@@ -617,7 +626,7 @@ def _try_authorize(state_dir):
     if cmd_authorize(argparse.Namespace()) != 0:
         return False
     try:
-        fresh = fragment.stat().st_mtime > before and "access_token=AT-" in fragment.read_text()
+        fresh = fragment.stat().st_mtime > before and "access_token=AT-" in fragment.read_text(encoding="utf-8")
     except OSError:
         fresh = False
     return fresh and _try_session(state_dir)
@@ -643,17 +652,42 @@ def session_lock(state_dir):
     """
     folder = Path(state_dir)
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with _SESSION_THREAD_LOCK, open(folder / "session.lock", "a") as handle:
-        try:
-            import fcntl
-        except ImportError:  # Windows: só a trava entre threads
-            yield
-            return
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with _SESSION_THREAD_LOCK, open(folder / "session.lock", "a+b") as handle:
+        _lock_file(handle)
         try:
             yield
         finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            _unlock_file(handle)
+
+
+def _lock_file(handle):
+    """Trava exclusiva do arquivo inteiro, esperando quem tem. POSIX: flock; Windows: msvcrt."""
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+
+        # O Windows trava um intervalo de bytes e desiste após ~10 s; repete até conseguir.
+        handle.seek(0)
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                continue
+    fcntl.flock(handle, fcntl.LOCK_EX)
+
+
+def _unlock_file(handle):
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def ensure_session(args, quiet=False):
@@ -672,13 +706,13 @@ def _ensure_session_locked(state_dir, module, quiet):
     from gerid_adapter import api as api_mod
 
     try:
-        left = api_mod.seconds_left((state_dir / "ifs_auth.jwt").read_text().strip())
+        left = api_mod.seconds_left((state_dir / "ifs_auth.jwt").read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         left = -1
     if left > 120:
         from gerid_adapter import api as api_mod
 
-        token_text = (state_dir / "ifs_auth.jwt").read_text().strip()
+        token_text = (state_dir / "ifs_auth.jwt").read_text(encoding="utf-8").strip()
         try:
             live = api_mod.PortalApi(token_text).alive()
         except Exception:
@@ -716,6 +750,90 @@ def _ensure_session_locked(state_dir, module, quiet):
         return 0
     print("Não renovei (veja o motivo acima; se for rede, troque de rede ou rode `gerid-poc watch`).")
     return 1
+
+
+LOGOUT_PATH = "/cas/logout"  # o mesmo que o botão "Sair" do portal abre (tirado do JS do site)
+SESSION_FILES = ("cookies.json", "oauth-fragment.txt", "ifs_auth.jwt", "gerid_token.jwt", "portal-session.json")
+
+
+def _server_logout(cookies):
+    """GET /cas/logout com o TGC: encerra o SSO no servidor. Devolve (ok, detalhe)."""
+    try:
+        connection, _, _ = connect(port=443)
+    except Exception as error:
+        return False, f"sem conexão com o GERID ({type(error).__name__}): {error}"
+    try:
+        status, _, body = http_get(connection, LOGOUT_PATH, port=443, cookies=cookies)
+    except Exception as error:
+        return False, f"falha na chamada ({type(error).__name__}): {error}"
+    finally:
+        connection.close()
+    done = status.startswith(("200", "30")) and (b"deslogar" in body.lower() or status.startswith("30"))
+    return done, status
+
+
+def end_session(state_dir=None):
+    """Encerra a sessão: logout do CAS no servidor e apagão dos tokens/cookies locais.
+
+    Antes de apagar, testa se o `ifs_auth` antigo ainda vale no servidor, para saber
+    se o logout do CAS o derruba ou se ele segue valendo até o `exp`. Os downloads ficam.
+    """
+    from gerid_adapter import api as api_mod
+
+    state_dir = Path(state_dir or STATE_DIR)
+    with session_lock(state_dir):
+        try:
+            cookies = json.loads((state_dir / "cookies.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cookies = {}
+        try:
+            old_token = (state_dir / "ifs_auth.jwt").read_text(encoding="utf-8").strip()
+        except OSError:
+            old_token = ""
+        if cookies.get("TGC"):
+            server_ok, detail = _server_logout(cookies)
+        else:
+            server_ok, detail = None, "sem TGC salvo (nada a encerrar no servidor)"
+        still_valid = None
+        if old_token and api_mod.seconds_left(old_token) > 0 and server_ok is not None:
+            try:
+                still_valid = bool(api_mod.PortalApi(old_token).alive())
+            except Exception:
+                still_valid = None
+        removed = []
+        for name in SESSION_FILES:
+            try:
+                (state_dir / name).unlink()
+                removed.append(name)
+            except OSError:
+                pass
+        for pattern in ("*.html", "*.headers.txt"):
+            for path in state_dir.glob(pattern):
+                try:
+                    path.unlink()
+                    removed.append(path.name)
+                except OSError:
+                    pass
+    return {"servidor": {"encerrada": server_ok, "detalhe": detail},
+            "tokenAntigoAindaValidoNoServidor": still_valid, "arquivosApagados": sorted(removed)}
+
+
+def cmd_logout(args):
+    result = end_session(args.dir)
+    server = result["servidor"]
+    if server["encerrada"] is True:
+        print(f"Sessão encerrada no servidor ({server['detalhe']}).")
+    elif server["encerrada"] is False:
+        print(f"Não consegui encerrar no servidor: {server['detalhe']}. Os arquivos locais foram apagados mesmo assim.")
+    else:
+        print(f"Servidor: {server['detalhe']}.")
+    valid = result["tokenAntigoAindaValidoNoServidor"]
+    if valid is not None:
+        print("Prova: o token antigo " + ("AINDA vale no servidor (vence só no prazo dele)." if valid
+                                          else "foi recusado pelo servidor (sessão derrubada)."))
+    print(f"Apagados em {args.dir}: {', '.join(result['arquivosApagados']) or 'nada'}.")
+    print("A próxima consulta fará um novo login com o A3.")
+    return 0 if server["encerrada"] is not False else 1
 
 
 def cmd_ensure(args):
@@ -872,6 +990,9 @@ def main(argv=None):
     import_.add_argument("--terminal", action="store_true", help="pedir a senha no terminal em vez da página local")
     import_.add_argument("--passphrase-stdin", action="store_true", help="ler a senha da entrada padrão")
     import_.set_defaults(func=cmd_import)
+    sub.add_parser("prepare-browser", help="baixa o navegador do captcha (cloak) antes do primeiro uso").set_defaults(
+        func=cmd_prepare_browser
+    )
     authorize = sub.add_parser("authorize", help="OAuth do portal do INSS com o TGC salvo (sem PIN)")
     authorize.set_defaults(func=cmd_authorize)
     session = sub.add_parser("session", help="troca do access_token + papel e estado p/ o browser (sem PIN)")
@@ -881,6 +1002,9 @@ def main(argv=None):
     ensure = sub.add_parser("ensure", help="garante sessão válida, renovando sozinho só o que expirou")
     ensure.add_argument("--dir", default=str(STATE_DIR))
     ensure.set_defaults(func=cmd_ensure)
+    logout = sub.add_parser("logout", help="encerra a sessão no GERID (CAS) e apaga os tokens locais")
+    logout.add_argument("--dir", default=str(STATE_DIR))
+    logout.set_defaults(func=cmd_logout)
     watch = sub.add_parser("watch", help="espera a 8443 voltar e credencia sozinho")
     watch.add_argument("--timeout", type=int, default=3600, help="tempo máximo de espera em segundos")
     watch.add_argument("--interval", type=int, default=30, help="intervalo entre verificações em segundos")

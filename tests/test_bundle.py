@@ -1,6 +1,7 @@
 """Pacote de credenciais: ida e volta, senha errada, export a partir de customers/ e import no cofre."""
 
 import io
+import os
 
 import pytest
 
@@ -59,7 +60,7 @@ def test_export_then_import_writes_vault(monkeypatch, tmp_path, capsys):
     assert poc.cmd_export(poc.argparse.Namespace(customer="victor", out=str(out))) == 0
     printed = capsys.readouterr().out
     passphrase = printed.rsplit(": ", 1)[1].strip()
-    assert (out.stat().st_mode & 0o777) == 0o600
+    assert os.name == "nt" or (out.stat().st_mode & 0o777) == 0o600  # Windows não tem modo Unix
     assert "1234" not in out.read_text() and SECRET not in out.read_text()
 
     vault = {}

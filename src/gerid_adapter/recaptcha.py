@@ -7,7 +7,7 @@ recebe score de bot e é recusado; por isso o mint roda num Chromium stealth
 
 Uso típico (um token por chamada, válido por ~2 min)::
 
-    state = json.loads(Path(".local/portal-session.json").read_text())
+    state = json.loads(Path(".local/portal-session.json").read_text(encoding="utf-8"))
     token = mint(state)
     api.notifications(token)
 
@@ -18,6 +18,7 @@ via CDP, com perfil persistente — abre janela, mas é binário first-party).
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -33,6 +34,18 @@ SITE_KEY = "6LfA-t8oAAAAAAMYMMHDthsSTek1eOYMwyjJcvoK"
 FINGERPRINT_SEED = "424242"
 
 DEFAULT_CDP_PORT = 9252
+
+# O cloakbrowser baixa o próprio Chromium (centenas de MB) no primeiro launch e não
+# tem trava: duas chamadas juntas baixariam em dobro. Um download por processo.
+_CLOAK_BINARY_LOCK = threading.Lock()
+
+
+def prepare_cloak():
+    """Garante o Chromium do cloak no cache (~/.cloakbrowser), baixando se faltar. Devolve o caminho."""
+    from cloakbrowser import ensure_binary
+
+    with _CLOAK_BINARY_LOCK:
+        return ensure_binary()
 DEFAULT_CDP_PROFILE = Path(__file__).resolve().parents[2] / ".local" / "chrome-cdp-profile"
 
 
@@ -136,12 +149,13 @@ def mint_cloak(state, action=None, timeout_ms=60_000):
     """Mint headless com o Chromium stealth (padrão: sem janela)."""
     from cloakbrowser import launch
 
-    browser = launch(
-        headless=True,
-        locale="pt-BR",
-        timezone="America/Sao_Paulo",
-        args=[f"--fingerprint={FINGERPRINT_SEED}"],
-    )
+    with _CLOAK_BINARY_LOCK:  # o launch baixa o binário se faltar
+        browser = launch(
+            headless=True,
+            locale="pt-BR",
+            timezone="America/Sao_Paulo",
+            args=[f"--fingerprint={FINGERPRINT_SEED}"],
+        )
     try:
         context = browser.new_context(locale="pt-BR", timezone_id="America/Sao_Paulo")
         context.add_init_script(_init_script(state))
