@@ -179,7 +179,7 @@ class TlsHttp:
         return self.request("POST", url, cookies=cookies, referer=referer, headers=headers, json_body=payload)
 
 
-def impersonated_post_json(url, payload, headers=None, timeout=30):
+def impersonated_post_json(url, payload, headers=None, timeout=30, *, allow_redirects=True):
     """POST JSON com TLS impersonando o Chrome.
 
     O transporte tlslite tem fingerprint TLS próprio e o TLS padrão do Python
@@ -193,7 +193,9 @@ def impersonated_post_json(url, payload, headers=None, timeout=30):
         head[name] = value
     session = curl_requests.Session(impersonate="chrome", verify=certifi.where())
     try:
-        result = session.post(url, json=payload, headers=head, timeout=timeout)
+        body = {"data": b"null"} if payload is None else {"json": payload}
+        redirects = {} if allow_redirects else {"allow_redirects": False}
+        result = session.post(url, **body, headers=head, timeout=timeout, **redirects)
     except Exception as error:
         raise RuntimeError(f"Falha de rede ao chamar o portal ({type(error).__name__})") from None
     return Response(url, result.status_code, list(result.headers.items()), result.content)

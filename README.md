@@ -182,3 +182,7 @@ uv run python tools/inventario_token.py
 
 Módulos PKCS#11 padrão do SafeSign: `libaetpkss.dylib` (macOS),
 `aetpkss1.dll` (Windows) e `libaetpkss.so` (Linux).
+
+## Requerimento de Salário-Maternidade Urbano
+
+O comando `gerid-sm` prepara e valida um caso de parto com certidão, gera uma confirmação para revisão e, após aprovação, protocola e inclui o advogado. Veja o [guia do fluxo e da validação](docs/salario-maternidade.md).

@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 gerid-poc = "gerid_adapter.poc:main"
 gerid-mcp = "gerid_adapter.mcp_server:main"
+gerid-sm = "gerid_adapter.sm_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
