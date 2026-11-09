@@ -34,7 +34,7 @@ from pydantic import Field
 
 from gerid_adapter import docs
 from gerid_adapter import recaptcha as recaptcha_mod
-from gerid_adapter.api import ApiError, PortalApi, seconds_left
+from gerid_adapter.api import ApiError, CaptchaChallenge, PortalApi, seconds_left
 from gerid_adapter.poc import STATE_DIR, ensure_session
 from gerid_adapter.session import js_now, read_state
 
@@ -212,9 +212,35 @@ def do_search_tasks(calls=None, **options):
     page_size = options.pop("page_size", 20)
     if captcha is not None:
         return portal.search_tasks(captcha, page=page, page_size=page_size, **options)
-    return _with_fresh_captcha(
-        lambda token: portal.search_tasks(token, page=page, page_size=page_size, **options), state_dir
-    )
+
+    def factory(token):
+        try:
+            return portal.search_tasks(token, page=page, page_size=page_size, **options)
+        except CaptchaChallenge as challenge:
+            # Nota do token ficou baixa: o portal pediu o desafio de imagem.
+            # Resolve por OCR (sem navegador); se falhar, a fila tenta outro backend.
+            return _solve_challenge(portal, challenge, page, page_size, **options)
+
+    return _with_fresh_captcha(factory, state_dir)
+
+
+def _solve_challenge(portal, challenge, page, page_size, attempts=2, **options):
+    """Lê o imagemCaptcha do 428 e reenvia; solução errada devolve novo desafio."""
+    from gerid_adapter import captcha_image
+
+    last = challenge
+    for _ in range(attempts):
+        images = getattr(last, "images", None) or {}
+        if not images:
+            raise last
+        captcha_id = next(iter(images))
+        png = base64.b64decode(images[captcha_id])
+        solution = captcha_image.solve(png)
+        try:
+            return portal.search_tasks_challenge(captcha_id, solution, page=page, page_size=page_size, **options)
+        except CaptchaChallenge as again:
+            last = again
+    raise last
 
 
 def do_get_task(protocolo, portal=None, full=False):
@@ -548,8 +574,9 @@ async def list_notifications_tool(first: Annotated[int, Field(ge=0)] = 0) -> dic
     description=(
         "Busca paginada de tarefas PAT (filtros do portal). Datas em AAAA-MM-DD; sem datas, usa os últimos "
         "180 dias de atualização. situacaoTarefa é código numérico: 1=Cancelada, 2=Concluída, 3=Exigência. "
-        "Evite o filtro status (valores desconhecidos; o portal pode exigir captcha de imagem, HTTP 428). "
-        "Devolve tarefas[] e quantidadeTotalTarefa. Gera um token reCAPTCHA por chamada (~5 s). Read-only."
+        "Evite o filtro status (valores desconhecidos). Se o portal pedir o desafio de imagem (428), ele é "
+        "resolvido por OCR local e reenviado automaticamente; falhando, cai no captcha headed. "
+        "Devolve tarefas[] e quantidadeTotalTarefa. Read-only."
     ),
     annotations=READ_ONLY,
 )

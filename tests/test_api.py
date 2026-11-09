@@ -94,3 +94,42 @@ def test_transport_reuses_token_user_agent():
 def test_seconds_left_and_claims():
     assert jwt_claims(token_with(exp=100))["exp"] == 100
     assert seconds_left(token_with(exp=0)) < 0
+
+
+def test_search_428_com_imagem_vira_captcha_challenge():
+    """428 com imagemCaptcha carrega id+PNG no erro, para o OCR resolver."""
+    from gerid_adapter.api import CaptchaChallenge
+
+    body = json.dumps({"imagemCaptcha": {"abc-MTk=": "iVBORw0KGgo="}}).encode()
+    captured = {}
+
+    def poster(url, payload, headers):
+        captured["url"] = url
+        captured["payload"] = payload
+        return response(428, body)
+
+    api = PortalApi(token_with(cpf="1"), transport=FakeTransport([]), poster=poster)
+    with pytest.raises(CaptchaChallenge) as info:
+        api.search_tasks("RC", page=1, page_size=10)
+    assert info.value.status == 428
+    assert info.value.images == {"abc-MTk=": "iVBORw0KGgo="}
+    assert "tokenDesafio" not in captured["url"]
+
+
+def test_search_tasks_challenge_envia_solucao_na_query_e_id_no_corpo():
+    """Contrato da UI: solução em ?tokenDesafio= e id do desafio em tokenReCAPTCHA."""
+    captured = {}
+
+    def poster(url, payload, headers):
+        captured["url"] = url
+        captured["payload"] = payload
+        return response(200, b'{"tarefas": [], "quantidadeTotalTarefa": 0}')
+
+    api = PortalApi(token_with(cpf="1"), transport=FakeTransport([]), poster=poster)
+    assert api.search_tasks_challenge("abc-MTk=", "HATQ", page=2, page_size=5) == {
+        "tarefas": [],
+        "quantidadeTotalTarefa": 0,
+    }
+    assert "tokenDesafio=HATQ" in captured["url"]
+    assert "first=5&pageSize=5" in captured["url"]
+    assert captured["payload"]["tokenReCAPTCHA"] == "abc-MTk="
