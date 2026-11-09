@@ -12,14 +12,6 @@ from gerid_adapter.session import js_now
 
 def compare(state, token, headless=False):
     original_execute = recaptcha._execute_token
-    original_init_script = recaptcha._init_script
-
-    def init_script(values):
-        return (
-            f"if (window === window.top && location.origin === {json.dumps(recaptcha.PORTAL)}) {{"
-            + original_init_script(values)
-            + "}"
-        )
 
     def compare_on_page(page, key, action):
         if page.url.split("?", 1)[0].split("#", 1)[0] != recaptcha.TASKS_URL:
@@ -76,9 +68,7 @@ def compare(state, token, headless=False):
                     results[mode] = {"stage": stage, "error": type(error).__name__}
         return results
 
-    with patch.object(recaptcha, "_execute_token", compare_on_page), patch.object(
-        recaptcha, "_init_script", init_script
-    ):
+    with patch.object(recaptcha, "_execute_token", compare_on_page):
         return recaptcha.mint(state, backend_name="cdp", headless=headless, timeout_ms=20000)
 
 

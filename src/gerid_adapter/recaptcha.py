@@ -105,8 +105,9 @@ def chrome_cmd(chrome_path=None, port=DEFAULT_CDP_PORT, profile_dir=None, headle
 
 def _init_script(state):
     return (
-        "try{const S=%s;for(const k in S){localStorage.setItem(k,S[k]);}}catch(e){}"
-        % __import__("json").dumps(state)
+        "try{if(window===window.top && location.origin===%s){"
+        "const S=%s;for(const k in S){localStorage.setItem(k,S[k]);}}}catch(e){}"
+        % (__import__("json").dumps(PORTAL), __import__("json").dumps(state))
     )
 
 

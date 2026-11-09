@@ -84,12 +84,10 @@ def _session_state(state_dir):
 
 
 def _backends():
-    """Ordem dos navegadores do mint: o preferido (INSS_BROWSER, padrão cloak) e depois o outro.
-
-    A nota do reCAPTCHA de cada navegador varia com o tempo (o perfil cdp "esfria" e passa a
-    ser recusado com 400); com os dois na fila, o MCP segue funcionando sem intervenção.
-    """
+    """INSS_BROWSER=cdp isola o Chrome no experimento; o padrão tenta os dois."""
     preferred = os.environ.get("INSS_BROWSER", "cloak")
+    if preferred == "cdp":
+        return ["cdp"]
     return [preferred] + [name for name in ("cloak", "cdp") if name != preferred]
 
 
@@ -155,7 +153,10 @@ def _cdp_ready():
 def _attempts():
     """Navegadores a tentar, em ordem. O cdp só entra com perfil aquecido (máquina nova não tem);
     sobrando um só, ele ganha uma 2ª tentativa: a nota do reCAPTCHA varia de um token para outro."""
-    usable = [name for name in _backends() if name != "cdp" or _cdp_ready()]
+    backends = _backends()
+    if backends == ["cdp"]:
+        return backends  # um teste, com erro explícito do mint se faltar o perfil
+    usable = [name for name in backends if name != "cdp" or _cdp_ready()]
     return usable if len(usable) > 1 else usable * 2
 
 

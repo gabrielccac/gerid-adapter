@@ -446,23 +446,36 @@ def test_compact_task_summarizes_open_requirement():
 
 
 def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, tmp_path):
-    """Perfil cdp com nota baixa (400 "Erro de validação do reCAPTCHA"): o mesmo pedido passa com o outro navegador."""
+    """A seleção padrão tenta o segundo navegador quando o primeiro é recusado."""
     from gerid_adapter.api import ApiError
 
-    monkeypatch.setenv("INSS_BROWSER", "cdp")
+    monkeypatch.delenv("INSS_BROWSER", raising=False)
     monkeypatch.setattr(mcp, "_cdp_ready", lambda: True)
     used = []
     monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: used.append(backend) or f"RC-{backend}")
 
     def call(token):
-        if token == "RC-cdp":
+        if token == "RC-cloak":
             error = ApiError("POST x falhou (400): Erro de validação do reCAPTCHA.")
             error.status = 400
             raise error
         return {"ok": token}
 
-    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-cloak"}
-    assert used == ["cdp", "cloak"]
+    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-cdp"}
+    assert used == ["cloak", "cdp"]
+
+
+def test_cdp_experiment_reports_error_without_cloak_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("INSS_BROWSER", "cdp")
+    monkeypatch.setattr(mcp, "_cdp_ready", lambda: False)
+
+    def mint(state_dir, backend=None):
+        assert backend == "cdp"
+        raise RuntimeError("perfil ausente")
+
+    monkeypatch.setattr(mcp, "_mint", mint)
+    with pytest.raises(RuntimeError, match="perfil ausente"):
+        mcp._with_fresh_captcha(lambda _: pytest.fail("não deve consultar"), tmp_path)
 
 
 def test_fresh_captcha_switches_browser_when_mint_fails(monkeypatch, tmp_path):

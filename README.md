@@ -21,6 +21,12 @@ Compartilhe apenas o JSON com os status. Se o teste visível funcionar, repita c
 `--headless` para verificar o modo usado pelo MCP. Se o Chrome estiver fora da pasta
 padrão, defina `INSS_CHROME_PATH` para o executável.
 
+Para testar pelo MCP, defina `INSS_BROWSER=cdp` no ambiente **do servidor MCP**
+e reconecte. Nesta branch, essa configuração usa apenas o Chrome via CDP em
+headless. No CLI, `uv run --locked gerid-poc api --notifications --browser cdp`
+usa Chrome visível. O CLI mostra as notificações; para compartilhar só os
+status, use o script acima.
+
 Prova de conceito **pausada** de autenticação no GERID (INSS/Dataprev) com
 certificado ICP-Brasil A3, usando a chave do token via PKCS#11.
 
