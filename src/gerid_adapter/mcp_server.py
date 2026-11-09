@@ -90,6 +90,8 @@ def _backends():
     ser recusado com 400); com os dois na fila, o MCP segue funcionando sem intervenção.
     """
     preferred = os.environ.get("INSS_BROWSER", "cloak")
+    if preferred == "http":
+        return ["http"]
     return [preferred] + [name for name in ("cloak", "cdp") if name != preferred]
 
 
@@ -155,7 +157,10 @@ def _cdp_ready():
 def _attempts():
     """Navegadores a tentar, em ordem. O cdp só entra com perfil aquecido (máquina nova não tem);
     sobrando um só, ele ganha uma 2ª tentativa: a nota do reCAPTCHA varia de um token para outro."""
-    usable = [name for name in _backends() if name != "cdp" or _cdp_ready()]
+    backends = _backends()
+    if backends == ["http"]:
+        return backends  # uma tentativa isolada, sem fallback de navegador
+    usable = [name for name in backends if name != "cdp" or _cdp_ready()]
     return usable if len(usable) > 1 else usable * 2
 
 

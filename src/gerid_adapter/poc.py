@@ -1029,8 +1029,8 @@ def main(argv=None):
     api.add_argument("--page", type=int, default=1, help="página da busca")
     api.add_argument("--page-size", type=int, default=20, help="itens por página (1-100)")
     api.add_argument("--session-state", default=str(STATE_DIR / "portal-session.json"))
-    api.add_argument("--browser", default="cloak", choices=("cloak", "cdp"),
-                     help="mint do captcha: cloak (headless stealth) ou cdp (seu Chrome, perfil persistente)")
+    api.add_argument("--browser", default="cloak", choices=("cloak", "cdp", "http"),
+                     help="mint do captcha: cloak, cdp ou http (experimento Enterprise)")
     api.add_argument("--headless", action="store_true",
                      help="cdp em headless (sem janela; exige o perfil já aquecido)")
     api.set_defaults(func=cmd_api)

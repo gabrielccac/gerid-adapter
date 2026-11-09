@@ -250,9 +250,13 @@ def mint_cdp(state, action=None, timeout_ms=60_000, chrome=None, port=None,
 def mint(state, action=PORTAL_ACTION, timeout_ms=60_000, backend_name=None, headless=False):
     """Minta um `tokenReCAPTCHA` (uso único) com o estado de `portal-session.json`."""
     which = backend_name or backend()
-    if which not in ("cdp", "cloak"):
-        raise ValueError(f"Backend de mint desconhecido: {which!r} (use cloak ou cdp).")
+    if which not in ("cdp", "cloak", "http"):
+        raise ValueError(f"Backend de mint desconhecido: {which!r} (use cloak, cdp ou http).")
     try:
+        if which == "http":
+            from gerid_adapter.recaptcha_http import mint_http
+
+            return mint_http(action, min(timeout_ms, 15000))
         if which == "cdp":
             return mint_cdp(state, action, timeout_ms, headless=headless)
         return mint_cloak(state, action, timeout_ms)

@@ -1,5 +1,27 @@
 # gerid-adapter
 
+## Experimento: reCAPTCHA Enterprise por HTTP
+
+Na máquina que já tem uma sessão do GERID pelo adaptador, rode no checkout:
+
+```powershell
+uv run --locked gerid-poc api --notifications --browser http
+```
+
+O experimento da [issue #4](https://github.com/gabrielccac/gerid-adapter/issues/4)
+consulta `enterprise.js`, `anchor` e `reload` pelo HTTP, com a chave e a ação
+do portal. Usa o encoder e o parser do [BypassV3](https://github.com/EvickaStudio/BypassV3/tree/a571c3a516ae092e6978f45e26da19ad98efa271),
+incluídos com a licença Apache-2.0 porque o pacote upstream não gera wheel.
+PIN, JWT e cookies do INSS ficam fora dessas chamadas. A consulta
+de notificações usa a sessão GERID local. Um erro com `enterprise.js`, `anchor`
+ou `reload` indica falha na emissão. Um 400 da API de notificações indica que
+o Google retornou um token e o portal recusou a consulta.
+
+Para testar pelo MCP, defina `INSS_BROWSER=http` no ambiente do servidor MCP,
+reconecte e chame `gerid_list_notifications` com `first=0`. Nesta branch,
+esse modo faz uma tentativa apenas por HTTP e mantém o padrão existente
+quando a variável não está definida.
+
 Prova de conceito **pausada** de autenticação no GERID (INSS/Dataprev) com
 certificado ICP-Brasil A3, usando a chave do token via PKCS#11.
 
