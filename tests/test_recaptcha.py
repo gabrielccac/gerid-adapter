@@ -170,6 +170,7 @@ def test_mint_injects_state_and_returns_token(monkeypatch):
     assert browser.closed
     assert '"ifs_auth"' in browser.context.init_script
     assert browser.context.page.evaluated["key"] == SITE_KEY
+    assert browser.context.page.evaluated["action"] == "buscaRequerimentos"
     assert FINGERPRINT_SEED  # seed fixa documentada
 
 

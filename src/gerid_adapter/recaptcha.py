@@ -29,6 +29,8 @@ TASKS_URL = PORTAL + "/tarefas"
 # Key do anchor `recaptcha/enterprise` lida na página real do portal
 # autenticado (não reutilizar chaves de terceiros: esta sai do nosso fluxo).
 SITE_KEY = "6LfA-t8oAAAAAAMYMMHDthsSTek1eOYMwyjJcvoK"
+# A ação usada pelo portal tanto em notificações quanto na busca de tarefas.
+PORTAL_ACTION = "buscaRequerimentos"
 
 # Seed fixa = identidade estável ("visitante recorrente") entre execuções.
 FINGERPRINT_SEED = "424242"
@@ -245,7 +247,7 @@ def mint_cdp(state, action=None, timeout_ms=60_000, chrome=None, port=None,
         shutil.rmtree(staged, ignore_errors=True)
 
 
-def mint(state, action=None, timeout_ms=60_000, backend_name=None, headless=False):
+def mint(state, action=PORTAL_ACTION, timeout_ms=60_000, backend_name=None, headless=False):
     """Minta um `tokenReCAPTCHA` (uso único) com o estado de `portal-session.json`."""
     which = backend_name or backend()
     if which not in ("cdp", "cloak"):
