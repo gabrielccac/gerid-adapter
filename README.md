@@ -1,5 +1,26 @@
 # gerid-adapter
 
+## Experimento: Chrome via CDP
+
+Na máquina que já tem uma sessão do GERID pelo adaptador, rode no checkout:
+
+```powershell
+uv run --locked python tools/probe_recaptcha_cdp.py --open-profile
+```
+
+Isso abre o Chrome do sistema com `.local/chrome-cdp-profile`, separado do perfil pessoal.
+Faça login, confira as notificações pela interface do portal e feche essa janela. Depois rode:
+
+```powershell
+uv run --locked python tools/probe_recaptcha_cdp.py
+```
+
+O teste abre uma cópia do perfil, gera dois tokens novos na mesma página e consulta
+notificações pelo transporte atual (`curl_cffi`) e pelo Chrome (`browser_fetch`).
+Compartilhe apenas o JSON com os status. Se o teste visível funcionar, repita com
+`--headless` para verificar o modo usado pelo MCP. Se o Chrome estiver fora da pasta
+padrão, defina `INSS_CHROME_PATH` para o executável.
+
 Prova de conceito **pausada** de autenticação no GERID (INSS/Dataprev) com
 certificado ICP-Brasil A3, usando a chave do token via PKCS#11.
 
