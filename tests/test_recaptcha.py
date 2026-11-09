@@ -44,6 +44,7 @@ def test_notifications_posts_token_with_same_origin():
     assert sent["url"].endswith("/notificacao?first=5")
     assert sent["payload"] == {"tokenReCAPTCHA": "RC-1"}
     assert sent["headers"]["Origin"] == "https://atendimento.inss.gov.br"
+    assert sent["headers"]["Referer"] == "https://atendimento.inss.gov.br/tarefas"
     assert sent["headers"]["Sec-Fetch-Site"] == "same-origin"
     assert sent["headers"]["Authorization"].startswith("Bearer ")
 
@@ -60,6 +61,7 @@ def test_search_tasks_posts_expected_shape():
     assert result == {"tarefas": []}
     sent = calls[0]
     assert sent["url"].endswith("/tarefa/consulta?first=10&pageSize=10")
+    assert sent["headers"]["Referer"] == "https://atendimento.inss.gov.br/tarefas"
     assert sent["payload"]["tokenReCAPTCHA"] == "RC-2"
     assert sent["payload"]["status"] == "Pendente"
     assert sent["payload"]["dataAtualizacaoInicial"].endswith("T03:00:00.000Z")

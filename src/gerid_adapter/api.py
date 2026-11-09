@@ -138,7 +138,8 @@ class PortalApi:
         }
 
     def _post_json(self, path, payload):
-        response = self.poster(PORTAL + path, payload, {**self._headers(), **SAME_ORIGIN})
+        headers = {**self._headers(), **SAME_ORIGIN, "Referer": PORTAL + "/tarefas"}
+        response = self.poster(PORTAL + path, payload, headers)
         if not 200 <= response.status < 300:
             body = response.body[:200].decode("utf-8", "replace")
             raise _error(f"POST {path} falhou ({response.status}): {body}", response.status)
