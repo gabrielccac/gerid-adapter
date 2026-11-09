@@ -446,11 +446,11 @@ def test_compact_task_summarizes_open_requirement():
 
 
 def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, tmp_path):
-    """Perfil cdp com nota baixa (400 "Erro de validação do reCAPTCHA"): o mesmo pedido passa com o outro navegador."""
+    """Navegador preferido com nota baixa (400 "Erro de validação do reCAPTCHA"): o mesmo pedido
+    passa no fallback cdp-headed (headed seamless, janela fora da tela)."""
     from gerid_adapter.api import ApiError
 
     monkeypatch.setenv("INSS_BROWSER", "cdp")
-    monkeypatch.setattr(mcp, "_cdp_ready", lambda: True)
     used = []
     monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: used.append(backend) or f"RC-{backend}")
 
@@ -461,8 +461,8 @@ def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, 
             raise error
         return {"ok": token}
 
-    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-cloak"}
-    assert used == ["cdp", "cloak"]
+    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-cdp-headed"}
+    assert used == ["cdp", "cdp-headed"]
 
 
 def test_fresh_captcha_switches_browser_when_mint_fails(monkeypatch, tmp_path):
@@ -478,8 +478,9 @@ def test_fresh_captcha_switches_browser_when_mint_fails(monkeypatch, tmp_path):
     assert mcp._with_fresh_captcha(lambda token: {"ok": token}, tmp_path) == {"ok": "RC-cdp"}
 
 
-def test_fresh_captcha_retries_cloak_when_cdp_has_no_profile(monkeypatch, tmp_path):
-    """Máquina recém-instalada: sem perfil cdp, um 400 do cloak ganha uma 2ª tentativa com token novo."""
+def test_fresh_captcha_retries_headed_by_default(monkeypatch, tmp_path):
+    """Fila default é cdp-headed primeiro (persistente, sem launch por chamada);
+    um 400 ganha outra tentativa headed com token novo — sem reabrir browser."""
     from gerid_adapter.api import ApiError
 
     monkeypatch.delenv("INSS_BROWSER", raising=False)
@@ -495,7 +496,7 @@ def test_fresh_captcha_retries_cloak_when_cdp_has_no_profile(monkeypatch, tmp_pa
         return {"ok": token}
 
     assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-2"}
-    assert used == ["cloak", "cloak"]
+    assert used == ["cdp-headed", "cdp-headed"]
 
 
 def test_download_dir_follows_environment(monkeypatch, tmp_path):

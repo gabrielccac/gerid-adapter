@@ -100,6 +100,22 @@ def chrome_cmd(chrome_path=None, port=DEFAULT_CDP_PORT, profile_dir=None, headle
         # Headless só passa no captcha com o perfil já aquecido (histórico/score);
         # perfil frio costuma levar 400 na primeira vez (o retry cobre isso).
         cmd[1:1] = ["--headless=new", "--disable-gpu"]
+    else:
+        # Headed passa no captcha; a janela fica fora da tela (seamless) e o mint
+        # usa perfil fresco: validado que o score headed não depende do histórico,
+        # então sem cópia de perfil, sem imagens e com extras desligados (leve).
+        # Anti-throttling: a instância é persistente e a janela oclusa não pode
+        # adormecer os timers do grecaptcha entre mints.
+        cmd[1:1] = ["--window-position=-32000,-32000", "--window-size=800,600",
+                    "--blink-settings=imagesEnabled=false", "--mute-audio",
+                    "--disable-default-apps", "--disable-translate",
+                    "--metrics-recording-only",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding"]
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        # VPS/container roda como root: o Chrome se recusa a subir sem --no-sandbox.
+        cmd.append("--no-sandbox")
     return cmd + ["about:blank"]
 
 
@@ -211,14 +227,23 @@ def _stage_profile(profile_dir):
     return dest
 
 
+def _stage_fresh():
+    """Diretório de perfil vazio (o mint headed validado não precisa de histórico)."""
+    import tempfile
+
+    dest = Path(tempfile.mkdtemp(prefix="gerid-mint-fresh-"))
+    os.chmod(dest, 0o700)
+    return dest
+
+
 def mint_cdp(state, action=None, timeout_ms=60_000, chrome=None, port=None,
-           profile_dir=None, headless=False):
+           profile_dir=None, headless=False, fresh=False):
     """Mint no Chrome do usuário via CDP (cópia descartável do perfil aquecido)."""
     import shutil
 
     from playwright.sync_api import sync_playwright
 
-    staged = _stage_profile(profile_dir or DEFAULT_CDP_PROFILE)
+    staged = _stage_fresh() if fresh else _stage_profile(profile_dir or DEFAULT_CDP_PROFILE)
     port = port or _free_port()
     process = subprocess.Popen(
         chrome_cmd(chrome, port, staged, headless),
@@ -247,11 +272,113 @@ def mint_cdp(state, action=None, timeout_ms=60_000, chrome=None, port=None,
         shutil.rmtree(staged, ignore_errors=True)
 
 
+# Chrome headed seamless PERSISTENTE: sobe uma vez e fica vivo entre mints.
+# Reabrir a cada token custava ~2s de launch + perfil novo por chamada; vivo,
+# o mint reusa a página de /tarefas e só executa o grecaptcha de novo.
+_PERSISTENT = {"process": None, "port": None, "profile": None}
+_PERSISTENT_LOCK = threading.Lock()
+_PERSISTENT_MINT_LOCK = threading.Lock()
+
+
+def _cdp_alive(port):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _persistent_port(chrome=None):
+    """Porta do Chrome persistente; sobe (ou ressuscita) se preciso. Uma instância por processo."""
+    import atexit
+    import shutil
+
+    with _PERSISTENT_LOCK:
+        process, port = _PERSISTENT["process"], _PERSISTENT["port"]
+        if process is not None and process.poll() is None and port and _cdp_alive(port):
+            return port
+        if process is not None:  # morreu: limpa antes de ressuscitar
+            try:
+                process.kill()
+            except Exception:
+                pass
+            if _PERSISTENT["profile"]:
+                shutil.rmtree(_PERSISTENT["profile"], ignore_errors=True)
+        profile = _stage_fresh()
+        port = _free_port()
+        process = subprocess.Popen(
+            chrome_cmd(chrome, port, profile, headless=False),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _PERSISTENT.update(process=process, port=port, profile=profile)
+        if not _PERSISTENT.get("atexit"):
+            _PERSISTENT["atexit"] = True
+            atexit.register(_close_persistent)
+        _wait_cdp(port)
+        return port
+
+
+def _close_persistent():
+    import shutil
+
+    with _PERSISTENT_LOCK:
+        process, profile = _PERSISTENT["process"], _PERSISTENT["profile"]
+        if process is not None:
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        if profile:
+            shutil.rmtree(profile, ignore_errors=True)
+        _PERSISTENT.update(process=None, port=None, profile=None)
+
+
+def mint_cdp_persistent(state, action=None, timeout_ms=60_000, chrome=None):
+    """Mint no Chrome persistente: conecta por CDP, reusa a página de /tarefas."""
+    from playwright.sync_api import sync_playwright
+
+    with _PERSISTENT_MINT_LOCK:  # um mint por vez na mesma página
+        port = _persistent_port(chrome)
+        playwright = sync_playwright().start()
+        try:
+            browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=30000)
+            context = browser.contexts[0]
+            page = next(
+                (p for p in context.pages if p.url.split("?", 1)[0] == TASKS_URL), None
+            )
+            if page is None:  # primeira vez: init script vale no documento que vai nascer
+                page = context.new_page()
+                page.set_default_timeout(timeout_ms)
+                context.add_init_script(_init_script(state))
+                page.goto(TASKS_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+            else:  # reuso: selo temporal fresco direto no localStorage (mesma origem)
+                page.set_default_timeout(timeout_ms)
+                page.evaluate(
+                    "state => { for (const k in state) localStorage.setItem(k, state[k]); }", state
+                )
+            _wait_grecaptcha(page, timeout_ms)
+            return _execute_token(page, site_key(), action)
+        finally:
+            playwright.stop()  # só a conexão: o Chrome segue vivo
+
+
 def mint(state, action=PORTAL_ACTION, timeout_ms=60_000, backend_name=None, headless=False):
     """Minta um `tokenReCAPTCHA` (uso único) com o estado de `portal-session.json`."""
     which = backend_name or backend()
+    if which == "cdp-headed":
+        # Fallback headed seamless PERSISTENTE: sobe uma vez (janela fora da tela,
+        # perfil fresco, sem imagens) e fica vivo entre mints — sem reabrir por token.
+        # A nota varia por token; o chamador tenta mais de uma vez.
+        try:
+            return mint_cdp_persistent(state, action, timeout_ms)
+        except Exception as error:
+            raise RuntimeError(f"Mint do captcha falhou ({type(error).__name__}): {error}") from None
     if which not in ("cdp", "cloak"):
-        raise ValueError(f"Backend de mint desconhecido: {which!r} (use cloak ou cdp).")
+        raise ValueError(f"Backend de mint desconhecido: {which!r} (use cloak, cdp ou cdp-headed).")
     try:
         if which == "cdp":
             return mint_cdp(state, action, timeout_ms, headless=headless)

@@ -94,12 +94,14 @@ def _backends():
 
 
 def _mint(state_dir, backend=None):
-    # Sempre headless: nunca abrir janela no servidor.
-    # A SPA confere ifs_ts + ifs_ei (access_token de 10 min) e manda para o login
-    # do CAS se venceu; quem vale para a API é o ifs_auth, então carimbamos agora.
+    # Headless por padrão (sem janela); o fallback cdp-headed é headed seamless
+    # (janela fora da tela). A SPA confere ifs_ts + ifs_ei (access_token de 10 min)
+    # e manda para o login do CAS se venceu; quem vale para a API é o ifs_auth,
+    # então carimbamos agora.
     state = _session_state(state_dir)
     state["ifs_ts"] = state["ifs_iat"] = js_now()
-    return recaptcha_mod.mint(state, backend_name=backend or _backends()[0], headless=True)
+    name = backend or _backends()[0]
+    return recaptcha_mod.mint(state, backend_name=name, headless=(name != "cdp-headed"))
 
 
 def do_ensure(state_dir=None):
@@ -153,14 +155,26 @@ def _cdp_ready():
 
 
 def _attempts():
-    """Navegadores a tentar, em ordem. O cdp só entra com perfil aquecido (máquina nova não tem);
-    sobrando um só, ele ganha uma 2ª tentativa: a nota do reCAPTCHA varia de um token para outro."""
-    usable = [name for name in _backends() if name != "cdp" or _cdp_ready()]
-    return usable if len(usable) > 1 else usable * 2
+    """Navegadores a tentar, em ordem. Default: cdp-headed PRIMEIRO — é o único que
+    passa no Enterprise hoje e, persistente, custa ~1s por mint sem launch nenhum
+    (o cloak lança um Chromium próprio por mint e hoje pontua 400 em todas). O cloak
+    fica como último recurso (Chrome quebrado/ausente). INSS_BROWSER explícito
+    continua sendo respeitado na frente. Três tentativas headed ≈ 97% quando a
+    individual é ~2/3 (a nota varia por token)."""
+    preferred = os.environ.get("INSS_BROWSER")
+    if preferred == "cdp-headed":
+        return ["cdp-headed"] * 3
+    if preferred:  # escolha explícita: preferido na frente, headed de reserva
+        return [preferred, "cdp-headed", "cdp-headed", "cdp-headed"]
+    return ["cdp-headed", "cdp-headed", "cdp-headed", "cloak"]
 
 
 def _with_fresh_captcha(factory, state_dir):
-    """Minta e chama; se o captcha for recusado (400) ou o mint falhar, tenta de novo (outro navegador se houver)."""
+    """Minta e chama; se o captcha for recusado (400 ou 428) ou o mint falhar, tenta de novo (outro navegador se houver).
+
+    O 428 é o portal exigindo captcha de imagem quando a nota do token ficou baixa:
+    mesmo diagnóstico do 400, e um token melhor (fallback headed) dispensa a imagem.
+    """
     last = None
     for backend in _attempts():
         try:
@@ -172,7 +186,7 @@ def _with_fresh_captcha(factory, state_dir):
             return factory(token)
         except ApiError as error:
             last = error
-            if getattr(error, "status", None) != 400:
+            if getattr(error, "status", None) not in (400, 428):
                 raise
     raise last
 
