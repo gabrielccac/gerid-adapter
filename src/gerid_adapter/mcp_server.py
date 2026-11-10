@@ -83,24 +83,11 @@ def _session_state(state_dir):
     return read_state(state_dir / "portal-session.json")
 
 
-def _backends():
-    """Ordem dos navegadores do mint: o preferido (INSS_BROWSER, padrão cloak) e depois o outro.
-
-    A nota do reCAPTCHA de cada navegador varia com o tempo (o perfil cdp "esfria" e passa a
-    ser recusado com 400); com os dois na fila, o MCP segue funcionando sem intervenção.
-    """
-    preferred = os.environ.get("INSS_BROWSER", "cloak")
-    return [preferred] + [name for name in ("cloak", "cdp") if name != preferred]
-
-
 def _mint(state_dir, backend=None):
-    # Headless por padrão (sem janela); o fallback cdp-headed é headed seamless
-    # (janela fora da tela). A SPA confere ifs_ts + ifs_ei (access_token de 10 min)
-    # e manda para o login do CAS se venceu; quem vale para a API é o ifs_auth,
-    # então carimbamos agora.
+    # A SPA redireciona ao CAS quando ifs_ts + ifs_ei vence. Para a API vale o ifs_auth.
     state = _session_state(state_dir)
     state["ifs_ts"] = state["ifs_iat"] = js_now()
-    name = backend or _backends()[0]
+    name = backend or _attempts()[0]
     return recaptcha_mod.mint(state, backend_name=name, headless=(name != "cdp-headed"))
 
 
@@ -150,17 +137,8 @@ def do_diagnose():
             "egress_ip": net["egress_ip"], "veredito_rede": net["veredito"]}
 
 
-def _cdp_ready():
-    return recaptcha_mod.DEFAULT_CDP_PROFILE.is_dir()
-
-
 def _attempts():
-    """Navegadores a tentar, em ordem. Default: cdp-headed PRIMEIRO — é o único que
-    passa no Enterprise hoje e, persistente, custa ~1s por mint sem launch nenhum
-    (o cloak lança um Chromium próprio por mint e hoje pontua 400 em todas). O cloak
-    fica como último recurso (Chrome quebrado/ausente). INSS_BROWSER explícito
-    continua sendo respeitado na frente. Três tentativas headed ≈ 97% quando a
-    individual é ~2/3 (a nota varia por token)."""
+    """Tenta tokens novos no Chrome headed persistente antes da reserva do MCP."""
     preferred = os.environ.get("INSS_BROWSER")
     if preferred == "cdp-headed":
         return ["cdp-headed"] * 3
@@ -234,8 +212,12 @@ def _solve_challenge(portal, challenge, page, page_size, attempts=2, **options):
         if not images:
             raise last
         captcha_id = next(iter(images))
-        png = base64.b64decode(images[captcha_id])
-        solution = captcha_image.solve(png)
+        try:
+            png = base64.b64decode(images[captcha_id], validate=True)
+            solution = captcha_image.solve(png)
+        except Exception as error:
+            # Preserva o 428 para a fila continuar se o OCR estiver indisponível.
+            raise last from error
         try:
             return portal.search_tasks_challenge(captcha_id, solution, page=page, page_size=page_size, **options)
         except CaptchaChallenge as again:
@@ -482,7 +464,7 @@ CAPTCHA_BUDGET = float(os.environ.get("GERID_CAPTCHA_BUDGET", "50"))
 
 def _prepare_browser_in_background():
     """Baixa o Chromium do cloak enquanto o servidor espera a primeira chamada."""
-    if "cloak" not in _backends():
+    if "cloak" not in _attempts():
         return
 
     def run():

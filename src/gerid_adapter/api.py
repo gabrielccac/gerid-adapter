@@ -155,8 +155,8 @@ class PortalApi:
                 data = json.loads(response.body or b"null") or {}
             except ValueError:
                 data = {}
-            images = data.get("imagemCaptcha") or {}
-            if images:
+            images = data.get("imagemCaptcha") if isinstance(data, dict) else None
+            if isinstance(images, dict) and images:
                 error = CaptchaChallenge(f"POST {path} pediu desafio de imagem (428)")
                 error.status = 428
                 error.images = dict(images)

@@ -1,18 +1,15 @@
 """Oráculo de `tokenReCAPTCHA`: minta o token dentro da página autenticada.
 
-O token do reCAPTCHA Enterprise só é aceito quando nasce no contexto da
-página autenticada do portal (mesma sessão/origem). Chrome headless comum
-recebe score de bot e é recusado; por isso o mint roda num Chromium stealth
-(CloakBrowser) headless, que pontua como humano.
+O mint roda na página autenticada do portal. O backend ``cdp-headed`` usa
+o Chrome do sistema com a janela fora da tela e mantém a instância aberta.
 
 Uso típico (um token por chamada, válido por ~2 min)::
 
     state = json.loads(Path(".local/portal-session.json").read_text(encoding="utf-8"))
-    token = mint(state)
+    token = mint(state, backend_name="cdp-headed")
     api.notifications(token)
 
-Backends: ``cloak`` (padrão, headless stealth) ou ``cdp`` (o Chrome do usuário
-via CDP, com perfil persistente — abre janela, mas é binário first-party).
+Os backends ``cloak`` e ``cdp`` continuam disponíveis.
 """
 
 import os
@@ -120,9 +117,13 @@ def chrome_cmd(chrome_path=None, port=DEFAULT_CDP_PORT, profile_dir=None, headle
 
 
 def _init_script(state):
+    # A aba persistente pode recarregar depois de receber uma sessão mais nova.
     return (
-        "try{const S=%s;for(const k in S){localStorage.setItem(k,S[k]);}}catch(e){}"
-        % __import__("json").dumps(state)
+        "try{if(window===window.top && location.origin===%s"
+        " && !sessionStorage.getItem('gerid-adapter-state-seeded')){"
+        "const S=%s;for(const k in S){localStorage.setItem(k,S[k]);}"
+        "sessionStorage.setItem('gerid-adapter-state-seeded','1');}}catch(e){}"
+        % (__import__("json").dumps(PORTAL), __import__("json").dumps(state))
     )
 
 
@@ -353,7 +354,7 @@ def mint_cdp_persistent(state, action=None, timeout_ms=60_000, chrome=None):
             if page is None:  # primeira vez: init script vale no documento que vai nascer
                 page = context.new_page()
                 page.set_default_timeout(timeout_ms)
-                context.add_init_script(_init_script(state))
+                page.add_init_script(_init_script(state))
                 page.goto(TASKS_URL, wait_until="domcontentloaded", timeout=timeout_ms)
             else:  # reuso: selo temporal fresco direto no localStorage (mesma origem)
                 page.set_default_timeout(timeout_ms)
