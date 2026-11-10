@@ -34,7 +34,7 @@ from pydantic import Field
 
 from gerid_adapter import docs
 from gerid_adapter import recaptcha as recaptcha_mod
-from gerid_adapter.api import ApiError, PortalApi, seconds_left
+from gerid_adapter.api import ApiError, CaptchaChallenge, PortalApi, seconds_left
 from gerid_adapter.poc import STATE_DIR, ensure_session
 from gerid_adapter.session import js_now, read_state
 
@@ -83,23 +83,12 @@ def _session_state(state_dir):
     return read_state(state_dir / "portal-session.json")
 
 
-def _backends():
-    """Ordem dos navegadores do mint: o preferido (INSS_BROWSER, padrão cloak) e depois o outro.
-
-    A nota do reCAPTCHA de cada navegador varia com o tempo (o perfil cdp "esfria" e passa a
-    ser recusado com 400); com os dois na fila, o MCP segue funcionando sem intervenção.
-    """
-    preferred = os.environ.get("INSS_BROWSER", "cloak")
-    return [preferred] + [name for name in ("cloak", "cdp") if name != preferred]
-
-
 def _mint(state_dir, backend=None):
-    # Sempre headless: nunca abrir janela no servidor.
-    # A SPA confere ifs_ts + ifs_ei (access_token de 10 min) e manda para o login
-    # do CAS se venceu; quem vale para a API é o ifs_auth, então carimbamos agora.
+    # A SPA redireciona ao CAS quando ifs_ts + ifs_ei vence. Para a API vale o ifs_auth.
     state = _session_state(state_dir)
     state["ifs_ts"] = state["ifs_iat"] = js_now()
-    return recaptcha_mod.mint(state, backend_name=backend or _backends()[0], headless=True)
+    name = backend or _attempts()[0]
+    return recaptcha_mod.mint(state, backend_name=name, headless=(name != "cdp-headed"))
 
 
 def do_ensure(state_dir=None):
@@ -148,19 +137,22 @@ def do_diagnose():
             "egress_ip": net["egress_ip"], "veredito_rede": net["veredito"]}
 
 
-def _cdp_ready():
-    return recaptcha_mod.DEFAULT_CDP_PROFILE.is_dir()
-
-
 def _attempts():
-    """Navegadores a tentar, em ordem. O cdp só entra com perfil aquecido (máquina nova não tem);
-    sobrando um só, ele ganha uma 2ª tentativa: a nota do reCAPTCHA varia de um token para outro."""
-    usable = [name for name in _backends() if name != "cdp" or _cdp_ready()]
-    return usable if len(usable) > 1 else usable * 2
+    """Tenta tokens novos no Chrome headed persistente antes da reserva do MCP."""
+    preferred = os.environ.get("INSS_BROWSER")
+    if preferred == "cdp-headed":
+        return ["cdp-headed"] * 3
+    if preferred:  # escolha explícita: preferido na frente, headed de reserva
+        return [preferred, "cdp-headed", "cdp-headed", "cdp-headed"]
+    return ["cdp-headed", "cdp-headed", "cdp-headed", "cloak"]
 
 
 def _with_fresh_captcha(factory, state_dir):
-    """Minta e chama; se o captcha for recusado (400) ou o mint falhar, tenta de novo (outro navegador se houver)."""
+    """Minta e chama; se o captcha for recusado (400 ou 428) ou o mint falhar, tenta de novo (outro navegador se houver).
+
+    O 428 é o portal exigindo captcha de imagem quando a nota do token ficou baixa:
+    mesmo diagnóstico do 400, e um token melhor (fallback headed) dispensa a imagem.
+    """
     last = None
     for backend in _attempts():
         try:
@@ -172,7 +164,7 @@ def _with_fresh_captcha(factory, state_dir):
             return factory(token)
         except ApiError as error:
             last = error
-            if getattr(error, "status", None) != 400:
+            if getattr(error, "status", None) not in (400, 428):
                 raise
     raise last
 
@@ -198,9 +190,39 @@ def do_search_tasks(calls=None, **options):
     page_size = options.pop("page_size", 20)
     if captcha is not None:
         return portal.search_tasks(captcha, page=page, page_size=page_size, **options)
-    return _with_fresh_captcha(
-        lambda token: portal.search_tasks(token, page=page, page_size=page_size, **options), state_dir
-    )
+
+    def factory(token):
+        try:
+            return portal.search_tasks(token, page=page, page_size=page_size, **options)
+        except CaptchaChallenge as challenge:
+            # Nota do token ficou baixa: o portal pediu o desafio de imagem.
+            # Resolve por OCR (sem navegador); se falhar, a fila tenta outro backend.
+            return _solve_challenge(portal, challenge, page, page_size, **options)
+
+    return _with_fresh_captcha(factory, state_dir)
+
+
+def _solve_challenge(portal, challenge, page, page_size, attempts=2, **options):
+    """Lê o imagemCaptcha do 428 e reenvia; solução errada devolve novo desafio."""
+    from gerid_adapter import captcha_image
+
+    last = challenge
+    for _ in range(attempts):
+        images = getattr(last, "images", None) or {}
+        if not images:
+            raise last
+        captcha_id = next(iter(images))
+        try:
+            png = base64.b64decode(images[captcha_id], validate=True)
+            solution = captcha_image.solve(png)
+        except Exception as error:
+            # Preserva o 428 para a fila continuar se o OCR estiver indisponível.
+            raise last from error
+        try:
+            return portal.search_tasks_challenge(captcha_id, solution, page=page, page_size=page_size, **options)
+        except CaptchaChallenge as again:
+            last = again
+    raise last
 
 
 def do_get_task(protocolo, portal=None, full=False):
@@ -442,7 +464,7 @@ CAPTCHA_BUDGET = float(os.environ.get("GERID_CAPTCHA_BUDGET", "50"))
 
 def _prepare_browser_in_background():
     """Baixa o Chromium do cloak enquanto o servidor espera a primeira chamada."""
-    if "cloak" not in _backends():
+    if "cloak" not in _attempts():
         return
 
     def run():
@@ -534,8 +556,9 @@ async def list_notifications_tool(first: Annotated[int, Field(ge=0)] = 0) -> dic
     description=(
         "Busca paginada de tarefas PAT (filtros do portal). Datas em AAAA-MM-DD; sem datas, usa os últimos "
         "180 dias de atualização. situacaoTarefa é código numérico: 1=Cancelada, 2=Concluída, 3=Exigência. "
-        "Evite o filtro status (valores desconhecidos; o portal pode exigir captcha de imagem, HTTP 428). "
-        "Devolve tarefas[] e quantidadeTotalTarefa. Gera um token reCAPTCHA por chamada (~5 s). Read-only."
+        "Evite o filtro status (valores desconhecidos). Se o portal pedir o desafio de imagem (428), ele é "
+        "resolvido por OCR local e reenviado automaticamente; falhando, cai no captcha headed. "
+        "Devolve tarefas[] e quantidadeTotalTarefa. Read-only."
     ),
     annotations=READ_ONLY,
 )
