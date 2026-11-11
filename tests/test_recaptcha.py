@@ -171,6 +171,7 @@ def test_mint_injects_state_and_returns_token(monkeypatch):
     assert mint(state) == "RC-MINTED"
     assert browser.closed
     assert '"ifs_auth"' in browser.context.init_script
+    assert 'window===window.top && location.origin==="https://atendimento.inss.gov.br"' in browser.context.init_script
     assert browser.context.page.evaluated["key"] == SITE_KEY
     assert browser.context.page.evaluated["action"] == "buscaRequerimentos"
     assert FINGERPRINT_SEED  # seed fixa documentada
@@ -191,9 +192,11 @@ def test_mint_dispatches_backends(monkeypatch):
     calls = []
     monkeypatch.setattr(recaptcha_mod, "mint_cloak", lambda *a, **k: calls.append("cloak") or "RC-CLOAK")
     monkeypatch.setattr(recaptcha_mod, "mint_cdp", lambda *a, **k: calls.append("cdp") or "RC-CDP")
+    monkeypatch.setattr(recaptcha_mod, "mint_cdp_persistent", lambda *a, **k: calls.append("cdp-headed") or "RC-HEADED")
     assert mint({}, backend_name="cloak") == "RC-CLOAK"
     assert mint({}, backend_name="cdp") == "RC-CDP"
-    assert calls == ["cloak", "cdp"]
+    assert mint({}, backend_name="cdp-headed") == "RC-HEADED"
+    assert calls == ["cloak", "cdp", "cdp-headed"]
     with pytest.raises(ValueError):
         mint({}, backend_name="navegador-qualquer")
 

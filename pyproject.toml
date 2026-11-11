@@ -25,6 +25,11 @@ gerid-sm = "gerid_adapter.sm_cli:main"
 requires = ["uv_build>=0.13.1,<0.14.0"]
 build-backend = "uv_build"
 
+[project.optional-dependencies]
+# OCR local do captcha de imagem (desafio 428 da busca). Sem isto, o fallback
+# headed cobre a busca; com isto, o 428 é resolvido sem abrir navegador.
+captcha-ocr = ["ddddocr>=1.6,<2"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

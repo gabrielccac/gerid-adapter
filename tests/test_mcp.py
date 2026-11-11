@@ -230,7 +230,7 @@ def test_browser_prepared_in_background_only_for_cloak(monkeypatch):
     mcp._prepare_browser_in_background()
     assert started.wait(2)
 
-    monkeypatch.setattr(mcp, "_backends", lambda: ["cdp"])
+    monkeypatch.setenv("INSS_BROWSER", "cdp-headed")
     monkeypatch.setattr(mcp.recaptcha_mod, "prepare_cloak", lambda: pytest.fail("não deve baixar"))
     mcp._prepare_browser_in_background()
 
@@ -446,11 +446,11 @@ def test_compact_task_summarizes_open_requirement():
 
 
 def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, tmp_path):
-    """Perfil cdp com nota baixa (400 "Erro de validação do reCAPTCHA"): o mesmo pedido passa com o outro navegador."""
+    """Navegador preferido com nota baixa (400 "Erro de validação do reCAPTCHA"): o mesmo pedido
+    passa no fallback cdp-headed (headed seamless, janela fora da tela)."""
     from gerid_adapter.api import ApiError
 
     monkeypatch.setenv("INSS_BROWSER", "cdp")
-    monkeypatch.setattr(mcp, "_cdp_ready", lambda: True)
     used = []
     monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: used.append(backend) or f"RC-{backend}")
 
@@ -461,29 +461,31 @@ def test_fresh_captcha_switches_browser_when_recaptcha_is_rejected(monkeypatch, 
             raise error
         return {"ok": token}
 
-    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-cloak"}
-    assert used == ["cdp", "cloak"]
+    assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-cdp-headed"}
+    assert used == ["cdp", "cdp-headed"]
 
 
 def test_fresh_captcha_switches_browser_when_mint_fails(monkeypatch, tmp_path):
-    monkeypatch.delenv("INSS_BROWSER", raising=False)
-    monkeypatch.setattr(mcp, "_cdp_ready", lambda: True)
+    monkeypatch.setenv("INSS_BROWSER", "cloak")
+    used = []
 
     def mint(state_dir, backend=None):
+        used.append(backend)
         if backend == "cloak":
             raise RuntimeError("Mint do captcha falhou")
-        return "RC-cdp"
+        return f"RC-{backend}"
 
     monkeypatch.setattr(mcp, "_mint", mint)
-    assert mcp._with_fresh_captcha(lambda token: {"ok": token}, tmp_path) == {"ok": "RC-cdp"}
+    assert mcp._with_fresh_captcha(lambda token: {"ok": token}, tmp_path) == {"ok": "RC-cdp-headed"}
+    assert used == ["cloak", "cdp-headed"]
 
 
-def test_fresh_captcha_retries_cloak_when_cdp_has_no_profile(monkeypatch, tmp_path):
-    """Máquina recém-instalada: sem perfil cdp, um 400 do cloak ganha uma 2ª tentativa com token novo."""
+def test_fresh_captcha_retries_headed_by_default(monkeypatch, tmp_path):
+    """Fila default é cdp-headed primeiro (persistente, sem launch por chamada);
+    um 400 ganha outra tentativa headed com token novo — sem reabrir browser."""
     from gerid_adapter.api import ApiError
 
     monkeypatch.delenv("INSS_BROWSER", raising=False)
-    monkeypatch.setattr(mcp, "_cdp_ready", lambda: False)
     used = []
     monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend=None: used.append(backend) or f"RC-{len(used)}")
 
@@ -495,7 +497,32 @@ def test_fresh_captcha_retries_cloak_when_cdp_has_no_profile(monkeypatch, tmp_pa
         return {"ok": token}
 
     assert mcp._with_fresh_captcha(call, tmp_path) == {"ok": "RC-2"}
-    assert used == ["cloak", "cloak"]
+    assert used == ["cdp-headed", "cdp-headed"]
+
+
+def test_search_retries_428_when_optional_ocr_is_unavailable(monkeypatch):
+    from gerid_adapter import captcha_image
+    from gerid_adapter.api import CaptchaChallenge
+
+    monkeypatch.delenv("INSS_BROWSER", raising=False)
+    monkeypatch.setattr(mcp, "do_ensure", lambda _: None)
+    tokens = iter(["RC-1", "RC-2"])
+    monkeypatch.setattr(mcp, "_mint", lambda state_dir, backend: next(tokens))
+
+    def unavailable(_):
+        raise RuntimeError("OCR indisponível")
+
+    class Portal:
+        def search_tasks(self, token, **options):
+            if token == "RC-1":
+                error = CaptchaChallenge("desafio de imagem")
+                error.status = 428
+                error.images = {"id": "aW1hZ2U="}
+                raise error
+            return {"ok": token}
+
+    monkeypatch.setattr(captcha_image, "solve", unavailable)
+    assert mcp.do_search_tasks(calls=(Portal(), None)) == {"ok": "RC-2"}
 
 
 def test_download_dir_follows_environment(monkeypatch, tmp_path):

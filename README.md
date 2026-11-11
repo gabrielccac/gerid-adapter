@@ -35,11 +35,16 @@ consulte o INSS e a OAB sobre canais oficiais para entidades conveniadas.
 | `src/gerid_adapter/totp.py` | TOTP (RFC 6238) |
 | `src/gerid_adapter/poc.py` | CLI `gerid-poc` (`check`, `pin-set`, `login`, `totp-set`, `authorize`, `session`, `ensure`, `diagnose`, `watch`, `api`) |
 | `src/gerid_adapter/session.py` | Troca do `access_token` + papel e o estado do `localStorage` p/ transferir a sessão ao browser, tudo sem PIN |
-| `src/gerid_adapter/recaptcha.py` | Oráculo de `tokenReCAPTCHA` (cloak headless ou seu Chrome via CDP com perfil persistente); um token por chamada |
+| `src/gerid_adapter/recaptcha.py` | Geração de `tokenReCAPTCHA` na página autenticada, com Chrome do sistema ou CloakBrowser |
 
-Perfil aquecido padrão do backend `cdp`: `.local/chrome-cdp-profile/` (perfil
-proprietário, fora do git via `.gitignore`, permissão 700). Primeira execução
-aquece o perfil; com ele aquecido, `--browser cdp --headless` passa sem janela.
+Para testar o Chrome headed fora da tela pelo CLI, com o Chrome instalado:
+
+```bash
+uv run --locked gerid-poc api --notifications --browser cdp-headed
+```
+
+`cdp-headed` cria um perfil temporário vazio. O backend `cdp` usa o perfil
+existente em `.local/chrome-cdp-profile/`.
 
 ## Credenciais de clientes
 
@@ -77,8 +82,10 @@ Os comandos `api` renovam sozinhos antes de chamar (`--no-refresh` desliga).
 `gerid_list_downloads`). Documentos são salvos em `.local/downloads/` (0600)
 e a ferramenta devolve a 1ª janela do **texto extraído do PDF** para o agente
 analisar/resumir; `gerid_read_document` (com `nextOffset`) continua a leitura.
-A sessão renova sozinha; rotas com captcha mintam um token por chamada em
-browser headless.
+A sessão renova sozinha. Nas rotas com CAPTCHA, o MCP usa `cdp-headed` por
+padrão. O Chrome fica fora da tela e o MCP reaproveita a instância para emitir
+um token novo a cada tentativa. Na busca de tarefas, o extra opcional de OCR
+resolve o desafio HTTP 428. Para habilitá-lo, use `uv sync --locked --extra captcha-ocr`.
 
 - `gerid_get_task` devolve uma visão compacta (decisão com resultado/NB/motivo,
   interessados com idade, agendamentos, comentários em texto, anexos únicos);
@@ -147,9 +154,11 @@ Claude Code:
 claude mcp add gerid -- uv run --directory /caminho/para/gerid-adapter gerid-mcp
 ```
 
-Pré-requisitos na máquina do servidor: `uv sync` e `uv run gerid-poc prepare-browser` (baixa o navegador do captcha) uma vez, token A3 plugado
-e segredos no cofre (para a renovação automática). A primeira chamada com
-captcha é mais lenta (sobe o browser headless).
+Na máquina que roda o MCP, instale o Chrome e rode `uv sync --locked`.
+Para renovar a sessão automaticamente, configure o A3 e os segredos no cofre.
+O Chrome sobe na primeira chamada com CAPTCHA. Em Linux, disponibilize uma
+sessão gráfica ou rode o MCP sob Xvfb. `uv run gerid-poc prepare-browser`
+prepara o CloakBrowser usado como opção de reserva.
 
 ## Variáveis de ambiente
 
@@ -161,7 +170,7 @@ captcha é mais lenta (sobe o browser headless).
 | `GERID_DOWNLOAD_DIR` | Pasta dos PDFs baixados (padrão `~/.local/share/jurisync/documents`). As respostas trazem `savedAs` (nome portável): outro sistema lê o arquivo dessa pasta por esse nome |
 | `GERID_PKCS11_MODULE` | Biblioteca PKCS#11 de tokens que não são SafeSign |
 | `GERID_CAPTCHA_BUDGET` | Segundos até o MCP responder com um aviso em vez de estourar o tempo do cliente (padrão 50) |
-| `INSS_BROWSER=cdp` \| `cloak` | Backend do mint de captcha (CLI padrão: `cloak` headless; MCP padrão: `cdp` headless com perfil aquecido) |
+| `INSS_BROWSER=cdp-headed` \| `cdp` \| `cloak` | Backend preferido do MCP (padrão `cdp-headed`). No CLI, selecione com `--browser`. |
 | `INSS_RECAPTCHA_KEY` | Sobrescreve a site key lida na página real (uso normal: não definir) |
 | `src/gerid_adapter/api.py` | Chamadas read-only à API interna do portal com o token do GERID (tarefa, anexo, processo), por HTTP puro e sem PIN |
 | `src/gerid_adapter/mcp_server.py` | Servidor MCP: 10 ferramentas sobre `session`+`api`+`docs`, com renovação e captcha automáticos |

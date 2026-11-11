@@ -15,7 +15,7 @@ import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 from gerid_adapter.http import TlsHttp, impersonated_post_json
@@ -36,6 +36,16 @@ DIGITS = re.compile(r"^\d+$")
 
 class ApiError(RuntimeError):
     """Resposta não-2xx (ou corpo inválido) da API do portal."""
+
+
+class CaptchaChallenge(ApiError):
+    """428: o portal exigiu o desafio de imagem (nota do token v3 ficou baixa).
+
+    `images` guarda {id: PNG em Base64} do `imagemCaptcha`; a solução volta no
+    reenvio como `?tokenDesafio=<texto>` com `tokenReCAPTCHA=<id>` no corpo.
+    """
+
+    images = {}
 
 
 def _error(message, status=None):
@@ -140,6 +150,17 @@ class PortalApi:
     def _post_json(self, path, payload):
         headers = {**self._headers(), **SAME_ORIGIN, "Referer": PORTAL + "/tarefas"}
         response = self.poster(PORTAL + path, payload, headers)
+        if response.status == 428:
+            try:
+                data = json.loads(response.body or b"null") or {}
+            except ValueError:
+                data = {}
+            images = data.get("imagemCaptcha") if isinstance(data, dict) else None
+            if isinstance(images, dict) and images:
+                error = CaptchaChallenge(f"POST {path} pediu desafio de imagem (428)")
+                error.status = 428
+                error.images = dict(images)
+                raise error
         if not 200 <= response.status < 300:
             body = response.body[:200].decode("utf-8", "replace")
             raise _error(f"POST {path} falhou ({response.status}): {body}", response.status)
@@ -156,20 +177,33 @@ class PortalApi:
 
     def search_tasks(self, recaptcha_token, page=1, page_size=20, **filters):
         """Busca paginada de tarefas. O token captcha é de uso único (ver `recaptcha`)."""
+        return self._search(recaptcha_token, page, page_size, **filters)
+
+    def search_tasks_challenge(self, captcha_id, solution, page=1, page_size=20, **filters):
+        """Reenvia a busca resolvendo o desafio de imagem (428).
+
+        Contrato observado na UI do portal: a solução vai na query
+        (`&tokenDesafio=<texto>`) e o id do desafio no corpo, no campo
+        `tokenReCAPTCHA`. Uma solução errada devolve outro 428 com imagem nova.
+        """
+        return self._search(captcha_id, page, page_size, token_desafio=solution, **filters)
+
+    def _search(self, token, page, page_size, token_desafio=None, **filters):
         if isinstance(page, bool) or not isinstance(page, int) or page < 1:
             raise ValueError("page deve ser um inteiro a partir de 1.")
         if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 100:
             raise ValueError("page_size deve estar entre 1 e 100.")
         now = datetime.now(SAO_PAULO)
+        extra = f"&tokenDesafio={quote(str(token_desafio))}" if token_desafio else ""
         return self._post_json(
             "/apis/requerimentosPortalApi/requerimento/ec/tarefa/consulta"
-            f"?first={(page - 1) * page_size}&pageSize={page_size}",
+            f"?first={(page - 1) * page_size}&pageSize={page_size}{extra}",
             {
                 "cpf": filters.get("cpf") or "",
                 "nome": filters.get("nome") or "",
                 "protocolo": filters.get("protocolo") or "",
                 "status": filters.get("status") or "",
-                "tokenReCAPTCHA": recaptcha_token,
+                "tokenReCAPTCHA": token,
                 "dataAtualizacaoInicial": _search_date(filters.get("dataAtualizacaoInicial"), now - timedelta(days=180)),
                 "dataAtualizacaoFinal": _search_date(filters.get("dataAtualizacaoFinal"), now),
                 "situacaoTarefa": filters.get("situacaoTarefa") or "",

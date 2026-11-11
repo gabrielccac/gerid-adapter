@@ -599,6 +599,8 @@ def _captcha_call(args, client, operation):
 
 def _artifact_fresh(path, ttl_seconds):
     """Arquivo existe e foi escrito há menos de `ttl_seconds`?"""
+    if ttl_seconds <= 0:
+        return False
     try:
         return time.time() - Path(path).stat().st_mtime < ttl_seconds
     except OSError:
@@ -1029,8 +1031,8 @@ def main(argv=None):
     api.add_argument("--page", type=int, default=1, help="página da busca")
     api.add_argument("--page-size", type=int, default=20, help="itens por página (1-100)")
     api.add_argument("--session-state", default=str(STATE_DIR / "portal-session.json"))
-    api.add_argument("--browser", default="cloak", choices=("cloak", "cdp"),
-                     help="mint do captcha: cloak (headless stealth) ou cdp (seu Chrome, perfil persistente)")
+    api.add_argument("--browser", default="cloak", choices=("cloak", "cdp", "cdp-headed"),
+                     help="mint do captcha: cloak, cdp (perfil existente) ou cdp-headed (janela fora da tela)")
     api.add_argument("--headless", action="store_true",
                      help="cdp em headless (sem janela; exige o perfil já aquecido)")
     api.set_defaults(func=cmd_api)
